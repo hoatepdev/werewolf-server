@@ -4,18 +4,19 @@ export type Role =
   | 'seer'
   | 'witch'
   | 'hunter'
-  | 'guardian'
-  | 'clown';
+  | 'bodyguard'
+  | 'idiot';
 
 export type Phase = 'waiting' | 'night' | 'day' | 'voting' | 'ended';
 
-export type PlayerStatus = 'pending' | 'approved' | 'rejected';
+export type PlayerStatus = 'pending' | 'approved' | 'rejected' | 'gm';
 
 export interface Player {
   id: string;
-  name: string;
+  avatarKey: number;
+  username: string;
   status: PlayerStatus;
-  alive: boolean;
+  alive?: boolean;
   role?: Role;
 }
 
