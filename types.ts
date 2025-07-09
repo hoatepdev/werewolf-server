@@ -4,10 +4,9 @@ export type Role =
   | 'seer'
   | 'witch'
   | 'hunter'
-  | 'bodyguard'
-  | 'idiot';
+  | 'bodyguard';
 
-export type Phase = 'waiting' | 'night' | 'day' | 'voting' | 'ended';
+export type Phase = 'night' | 'day' | 'voting' | 'ended';
 
 export type PlayerStatus = 'pending' | 'approved' | 'rejected' | 'gm';
 

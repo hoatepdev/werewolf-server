@@ -29,11 +29,24 @@ export class RoomService {
       roomCode,
       hostId: id,
       players: [gm],
-      phase: 'waiting',
+      phase: 'night',
       round: 0,
       actions: [],
     };
     this.rooms.set(roomCode, room);
+    return room;
+  }
+
+  createGmRoom(roomCode: string, gmId: string): Partial<Room> {
+    const room: Partial<Room> = {
+      roomCode,
+      hostId: gmId,
+      players: [],
+      phase: 'night',
+      round: 0,
+      actions: [],
+    };
+    this.rooms.set(roomCode, room as Room);
     return room;
   }
 
@@ -57,6 +70,7 @@ export class RoomService {
     const player = room.players.find((p) => p.id === playerId);
     if (!player || player.status !== 'pending') return false;
     player.status = 'approved';
+
     return true;
   }
 
@@ -69,60 +83,14 @@ export class RoomService {
     return true;
   }
 
-  // startGame(roomCode: string): boolean {
-  //   const room = this.rooms.get(roomCode);
-  //   console.log('⭐ startGame - room', room);
-
-  //   if (!room) return false;
-  //   if (room.phase !== 'waiting') return false;
-  //   // Only approved players participate
-  //   const approvedPlayers = room.players.filter((p) => p.status === 'approved');
-  //   // TODO: Un-comment below line
-  //   // if (approvedPlayers.length < 3) return false;
-  //   const roles = this.assignRoles(approvedPlayers.length);
-  //   approvedPlayers.forEach((player, idx) => {
-  //     player.role = roles[idx];
-  //   });
-  //   room.phase = 'night';
-  //   room.round = 1;
-  //   return true;
-  // }
-
   nextPhase(roomCode: string): Phase | null {
     const room = this.rooms.get(roomCode);
     if (!room) return null;
-    const phaseOrder: Phase[] = ['waiting', 'night', 'day', 'voting', 'ended'];
+    const phaseOrder: Phase[] = ['night', 'day', 'voting', 'ended'];
     const idx = phaseOrder.indexOf(room.phase);
     if (idx === -1 || idx === phaseOrder.length - 1) return null;
     room.phase = phaseOrder[idx + 1];
     return room.phase;
-  }
-
-  private assignRoles(playerCount: number): Role[] {
-    // Example: 7 players: 2 werewolf, 1 seer, 1 witch, 1 hunter, 1 bodyguard, 1 idiot
-    const roles: Role[] = [];
-    if (playerCount >= 7) {
-      roles.push(
-        'werewolf',
-        'werewolf',
-        'seer',
-        'witch',
-        'hunter',
-        'bodyguard',
-        'idiot',
-      );
-      for (let i = 7; i < playerCount; i++) roles.push('villager');
-    } else {
-      // Fallback: 1 werewolf, rest villagers
-      roles.push('werewolf');
-      for (let i = 1; i < playerCount; i++) roles.push('villager');
-    }
-    // Shuffle roles
-    for (let i = roles.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [roles[i], roles[j]] = [roles[j], roles[i]];
-    }
-    return roles;
   }
 
   getPendingPlayers(roomCode: string): Player[] {
@@ -140,7 +108,6 @@ export class RoomService {
   randomizeRoles(roomCode: string, roles: Role[]): boolean {
     const room = this.rooms.get(roomCode);
     if (!room) return false;
-    if (room.phase !== 'waiting') return false;
     const approvedPlayers = room.players.filter((p) => p.status === 'approved');
     if (roles.length !== approvedPlayers.length) return false;
     // Shuffle roles for randomness
@@ -165,12 +132,11 @@ export class RoomService {
     if (!room) return false;
     const player = room.players.find((p) => p.id === playerId);
     if (!player || player.status !== 'approved') return false;
-    player.alive = true;
 
     const flag = room.players
       .filter((p) => p.status === 'approved')
-      .every((p) => p.alive === true);
-
+      .every((p) => p.alive === true || p.id === playerId);
+    player.alive = true;
     return flag;
   }
 }

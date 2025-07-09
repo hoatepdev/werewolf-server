@@ -4,11 +4,13 @@ import {
   SubscribeMessage,
   MessageBody,
   ConnectedSocket,
+  OnGatewayInit,
 } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
 import { RoomService } from '../service/room.service';
 import { Player, Role } from '../types';
 import { Injectable } from '@nestjs/common';
+import { PhaseManager } from '../service/phase-manager.service';
 
 @WebSocketGateway({
   cors: {
@@ -17,14 +19,21 @@ import { Injectable } from '@nestjs/common';
   },
 })
 @Injectable()
-export class GameGateway {
+export class GameGateway implements OnGatewayInit {
   @WebSocketServer()
   server: Server;
 
-  constructor(private readonly roomService: RoomService) {}
+  constructor(
+    private readonly roomService: RoomService,
+    private readonly phaseManager: PhaseManager,
+  ) {}
+
+  afterInit() {
+    this.phaseManager.setServer(this.server);
+  }
 
   @SubscribeMessage('rq_gm:createRoom')
-  handleCreateRoom(
+  async handleCreateRoom(
     @ConnectedSocket() socket: Socket,
     @MessageBody() data: { avatarKey: number; username: string },
   ) {
@@ -33,15 +42,34 @@ export class GameGateway {
       data.avatarKey,
       data.username,
     );
-    socket.join(room.roomCode);
-    // socket.emit('room:createRoom', room);
+    await socket.join(room.roomCode);
 
     this.server.to(room.roomCode).emit('room:updatePlayers', room.players);
     return room;
   }
 
+  @SubscribeMessage('rq_gm:connectGmRoom')
+  async handleConnectGmRoom(
+    @ConnectedSocket() socket: Socket,
+    @MessageBody() data: { roomCode: string; gmRoomId: string },
+  ) {
+    const room = this.roomService.getRoom(data.roomCode);
+    if (!room) {
+      return;
+    }
+
+    await socket.join(data.gmRoomId);
+    this.phaseManager.setGmRoom(data.roomCode, data.gmRoomId);
+
+    socket.emit('gm:connected', {
+      roomCode: data.roomCode,
+      gmRoomId: data.gmRoomId,
+      message: 'GM connected successfully',
+    });
+  }
+
   @SubscribeMessage('rq_player:joinRoom')
-  handleJoinRoom(
+  async handleJoinRoom(
     @ConnectedSocket() socket: Socket,
     @MessageBody()
     data: { roomCode: string; avatarKey: number; username: string },
@@ -61,7 +89,7 @@ export class GameGateway {
     };
 
     if (success) {
-      socket.join(data.roomCode);
+      await socket.join(data.roomCode);
       this.server
         .to(data.roomCode)
         .emit(
@@ -73,22 +101,6 @@ export class GameGateway {
       response.message = 'Unable to join room';
     }
     return response;
-  }
-
-  @SubscribeMessage('rq_gm:nextPhase')
-  handleNextPhase(
-    @ConnectedSocket() socket: Socket,
-    @MessageBody() data: { roomCode: string },
-  ) {
-    const phase = this.roomService.nextPhase(data.roomCode);
-    if (phase) {
-      const room = this.roomService.getRoom(data.roomCode);
-      if (room) {
-        this.server.to(room.roomCode).emit('room:phaseChanged', phase);
-      }
-    } else {
-      socket.emit('room:phaseError', { message: 'Unable to change phase.' });
-    }
   }
 
   @SubscribeMessage('rq_gm:approvePlayer')
@@ -129,7 +141,6 @@ export class GameGateway {
     if (success) {
       this.server.to(data.roomCode).emit('room:updatePlayers', room.players);
 
-      // Optionally, notify the rejected player
       this.server
         .to(data.playerId)
         .emit('player:rejected', { message: 'You were rejected by the GM.' });
@@ -181,7 +192,6 @@ export class GameGateway {
       'witch',
       'hunter',
       'bodyguard',
-      'idiot',
     ];
     if (!data.roles.every((role) => validRoles.includes(role))) {
       return 'Invalid roles provided';
@@ -193,7 +203,6 @@ export class GameGateway {
 
     if (success) {
       const updatedRoom = this.roomService.getRoom(data.roomCode);
-      console.log('⭐ updatedRoom', updatedRoom);
 
       if (updatedRoom) {
         updatedRoom.players
@@ -203,14 +212,7 @@ export class GameGateway {
               .to(player.id)
               .emit('player:assignedRole', { role: player.role });
           });
-        this.server
-          .to(updatedRoom.roomCode)
-          .emit('room:phaseChanged', updatedRoom.phase);
-        this.server
-          .to(updatedRoom.roomCode)
-          .emit('room:updatePlayers', updatedRoom.players);
       }
-      // socket.emit('gm:randomizeRolesSuccess', { roomCode: data.roomCode });
       return '';
     } else {
       socket.emit('room:randomizeRolesError', {
@@ -226,13 +228,116 @@ export class GameGateway {
     @MessageBody() data: { roomCode: string },
   ) {
     const room = this.roomService.getRoom(data.roomCode);
-    console.log('⭐ room', room);
     const success = this.roomService.playerReady(data.roomCode, socket.id);
-    if (success) {
-      socket.emit('player:readySuccess', { roomCode: data.roomCode });
-      this.server.to(data.roomCode).emit('room:readySuccess');
-      // this.server.to(data.roomCode).emit('room:phaseChanged', room?.phase);
-      // this.server.to(data.roomCode).emit('room:updatePlayers', room?.players);
+
+    if (room) {
+      this.server.to(data.roomCode).emit('room:updatePlayers', room.players);
+      if (success) {
+        socket.emit('player:readySuccess', { roomCode: data.roomCode });
+        this.server.to(data.roomCode).emit('room:readySuccess');
+        const approvedPlayers = room.players.filter(
+          (player) => player.status === 'approved',
+        );
+
+        // Get GM room ID if exists
+        const gmRoomId = `gm_${data.roomCode}`;
+
+        this.phaseManager.initGameState(
+          data.roomCode,
+          approvedPlayers,
+          gmRoomId,
+        );
+      }
     }
+  }
+
+  @SubscribeMessage('rq_gm:nextPhase')
+  handleNextPhase(
+    @ConnectedSocket() socket: Socket,
+    @MessageBody() data: { roomCode: string },
+  ) {
+    const state = this.phaseManager['gameStates'].get(data.roomCode);
+    if (!state) {
+      socket.emit('room:phaseError', { message: 'Game state not found.' });
+      return;
+    }
+    switch (state.phase) {
+      case 'night':
+        state.phase = 'day';
+        this.phaseManager.startDay(data.roomCode);
+        break;
+      case 'day':
+        state.phase = 'voting';
+        this.phaseManager.startVoting(data.roomCode);
+        break;
+      case 'voting':
+        this.phaseManager.checkWinCondition(data.roomCode);
+        break;
+      default:
+        state.phase = 'night';
+        this.phaseManager.handleNightPhase(data.roomCode);
+        break;
+    }
+  }
+
+  @SubscribeMessage('night:werewolf-action:done')
+  handleWerewolfActionDone(
+    @ConnectedSocket() socket: Socket,
+    @MessageBody() data: { roomCode: string; targetId: string },
+  ) {
+    this.phaseManager.handleRoleResponse(data.roomCode, socket.id, {
+      targetId: data.targetId,
+      vote: 'werewolf',
+    });
+  }
+
+  @SubscribeMessage('night:seer-action:done')
+  handleSeerActionDone(
+    @ConnectedSocket() socket: Socket,
+    @MessageBody() data: { roomCode: string; targetId: string },
+  ) {
+    this.phaseManager.handleRoleResponse(data.roomCode, socket.id, {
+      targetId: data.targetId,
+      vote: 'seer',
+    });
+  }
+
+  @SubscribeMessage('night:witch-action:done')
+  handleWitchActionDone(
+    @ConnectedSocket() socket: Socket,
+    @MessageBody()
+    data: {
+      roomCode: string;
+      heal: boolean;
+      poisonTargetId?: string;
+    },
+  ) {
+    this.phaseManager.handleRoleResponse(data.roomCode, socket.id, {
+      heal: data.heal,
+      poisonTargetId: data.poisonTargetId,
+      vote: 'witch',
+    });
+  }
+
+  @SubscribeMessage('night:bodyguard-action:done')
+  handleBodyguardActionDone(
+    @ConnectedSocket() socket: Socket,
+    @MessageBody() data: { roomCode: string; targetId: string },
+  ) {
+    this.phaseManager.handleRoleResponse(data.roomCode, socket.id, {
+      targetId: data.targetId,
+      vote: 'bodyguard',
+    });
+  }
+
+  @SubscribeMessage('night:hunter-action:done')
+  handleHunterActionDone(
+    @ConnectedSocket() socket: Socket,
+    @MessageBody() data: { roomCode: string; targetId?: string },
+  ) {
+    this.phaseManager.handleRoleResponse(data.roomCode, socket.id, {
+      targetId: data.targetId,
+      vote: 'hunter',
+    });
   }
 }
