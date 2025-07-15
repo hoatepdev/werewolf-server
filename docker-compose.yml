@@ -14,7 +14,7 @@ services:
       - ALLOWED_ORIGINS=${ALLOWED_ORIGINS}
       - PORT=${PORT}
     ports:
-      - '3600:3100'
+      - '3600:4001'
     networks:
       - masoi-net
 
