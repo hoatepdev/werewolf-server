@@ -9,10 +9,8 @@ import 'dotenv/config';
 
 @WebSocketGateway({
   cors: {
-    origin: process.env.ALLOWED_ORIGINS?.split(',').map((origin) =>
-      origin.trim(),
-    ),
-    credentials: true,
+    origin: '*',
+    credentials: false,
   },
 })
 export class AppGateway implements OnGatewayConnection, OnGatewayDisconnect {
