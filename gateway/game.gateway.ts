@@ -11,10 +11,13 @@ import { RoomService } from '../service/room.service';
 import { Player, Role } from '../types';
 import { Injectable } from '@nestjs/common';
 import { PhaseManager } from '../service/phase-manager.service';
+import 'dotenv/config';
 
 @WebSocketGateway({
   cors: {
-    origin: [`http://localhost:${process.env.PORT ?? 4000}`],
+    origin: process.env.ALLOWED_ORIGINS?.split(',').map((origin) =>
+      origin.trim(),
+    ),
     credentials: true,
   },
 })

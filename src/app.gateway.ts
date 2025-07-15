@@ -5,10 +5,13 @@ import {
   OnGatewayDisconnect,
 } from '@nestjs/websockets';
 import { Server } from 'socket.io';
+import 'dotenv/config';
 
 @WebSocketGateway({
   cors: {
-    origin: [`http://localhost:${process.env.PORT ?? 4000}`],
+    origin: process.env.ALLOWED_ORIGINS?.split(',').map((origin) =>
+      origin.trim(),
+    ),
     credentials: true,
   },
 })
