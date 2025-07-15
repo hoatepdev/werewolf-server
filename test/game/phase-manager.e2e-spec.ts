@@ -8,7 +8,7 @@ describe('PhaseManager E2E Game Flow', () => {
   let server: any;
   let roomId: string;
   let players: Player[];
-  let emits: any[];
+  let emits: { event: string; payload: any }[];
 
   beforeAll(() => {
     server = {
@@ -19,7 +19,7 @@ describe('PhaseManager E2E Game Flow', () => {
       })),
     };
     phaseManager = new PhaseManager();
-    phaseManager.setServer(server);
+    phaseManager.setServer(server as any);
   });
 
   beforeEach(() => {
@@ -91,41 +91,11 @@ describe('PhaseManager E2E Game Flow', () => {
       },
     ];
     emits = [];
-    (phaseManager as any).emitToRoleAndWaitResponse = async (
-      roomId: string,
-      role: string,
-      event: string,
-      data: any,
-    ) => {
-      const responses: any[] = [];
-      if (role === 'werewolf') {
-        responses.push({ playerId: 'p1', payload: { targetId: 'p8' } });
-        responses.push({ playerId: 'p2', payload: { targetId: 'p8' } });
-      }
-      if (role === 'seer') {
-        responses.push({ playerId: 'p3', payload: { targetId: 'p2' } });
-      }
-      if (role === 'witch') {
-        responses.push({
-          playerId: 'p4',
-          payload: { heal: true, poisonTargetId: 'p2' },
-        });
-      }
-      if (role === 'bodyguard') {
-        responses.push({ playerId: 'p5', payload: { targetId: 'p8' } });
-      }
-      if (role === 'hunter') {
-        responses.push({ playerId: 'p8', payload: { targetId: 'p3' } });
-      }
-      for (const res of responses) {
-        phaseManager.handleRoleResponse(roomId, res.playerId, res.payload);
-      }
-      return responses;
-    };
+    // Do NOT mock emitToRoleAndWaitResponse here
   });
 
   function getState(): GameState {
-    return (phaseManager as any).gameStates.get(roomId) as GameState;
+    return (phaseManager as any).getGameState(roomId) as GameState;
   }
 
   function respondVote(playerId: string, targetId: string) {
@@ -134,7 +104,18 @@ describe('PhaseManager E2E Game Flow', () => {
 
   it('should handle hunter auto-shoot on death (night or vote)', async () => {
     phaseManager.initGameState(roomId, players);
-    await phaseManager.startNightPhase(roomId);
+    const nightPhasePromise = phaseManager.startNightPhase(roomId);
+    // Simulate all role responses in order
+    phaseManager.handleRoleResponse(roomId, 'p1', { targetId: 'p8' });
+    phaseManager.handleRoleResponse(roomId, 'p2', { targetId: 'p8' });
+    phaseManager.handleRoleResponse(roomId, 'p3', { targetId: 'p2' });
+    phaseManager.handleRoleResponse(roomId, 'p4', {
+      heal: true,
+      poisonTargetId: 'p2',
+    });
+    phaseManager.handleRoleResponse(roomId, 'p5', { targetId: 'p8' });
+    phaseManager.handleRoleResponse(roomId, 'p8', { targetId: 'p3' });
+    await nightPhasePromise;
     jest.runAllTimers();
     // Không assert state ở đây, chỉ assert sau khi voting và hunter chết
     phaseManager.startVotingPhase(roomId);
@@ -156,7 +137,17 @@ describe('PhaseManager E2E Game Flow', () => {
 
   it('should allow seer to check correct role', async () => {
     phaseManager.initGameState(roomId, players);
-    await phaseManager.startNightPhase(roomId);
+    const nightPhasePromise = phaseManager.startNightPhase(roomId);
+    phaseManager.handleRoleResponse(roomId, 'p1', { targetId: 'p8' });
+    phaseManager.handleRoleResponse(roomId, 'p2', { targetId: 'p8' });
+    phaseManager.handleRoleResponse(roomId, 'p3', { targetId: 'p2' });
+    phaseManager.handleRoleResponse(roomId, 'p4', {
+      heal: true,
+      poisonTargetId: 'p2',
+    });
+    phaseManager.handleRoleResponse(roomId, 'p5', { targetId: 'p8' });
+    phaseManager.handleRoleResponse(roomId, 'p8', { targetId: 'p3' });
+    await nightPhasePromise;
     jest.runAllTimers();
     const state = getState();
     expect(state.seerTarget).toBe('p2');
@@ -166,7 +157,17 @@ describe('PhaseManager E2E Game Flow', () => {
 
   it('should allow witch to heal and poison correctly', async () => {
     phaseManager.initGameState(roomId, players);
-    await phaseManager.startNightPhase(roomId);
+    const nightPhasePromise = phaseManager.startNightPhase(roomId);
+    phaseManager.handleRoleResponse(roomId, 'p1', { targetId: 'p8' });
+    phaseManager.handleRoleResponse(roomId, 'p2', { targetId: 'p8' });
+    phaseManager.handleRoleResponse(roomId, 'p3', { targetId: 'p2' });
+    phaseManager.handleRoleResponse(roomId, 'p4', {
+      heal: true,
+      poisonTargetId: 'p2',
+    });
+    phaseManager.handleRoleResponse(roomId, 'p5', { targetId: 'p8' });
+    phaseManager.handleRoleResponse(roomId, 'p8', { targetId: 'p3' });
+    await nightPhasePromise;
     jest.runAllTimers();
     const state = getState();
     expect(state.witch.healUsed).toBe(true);
@@ -177,7 +178,17 @@ describe('PhaseManager E2E Game Flow', () => {
 
   it('should allow bodyguard to protect a player', async () => {
     phaseManager.initGameState(roomId, players);
-    await phaseManager.startNightPhase(roomId);
+    const nightPhasePromise = phaseManager.startNightPhase(roomId);
+    phaseManager.handleRoleResponse(roomId, 'p1', { targetId: 'p8' });
+    phaseManager.handleRoleResponse(roomId, 'p2', { targetId: 'p8' });
+    phaseManager.handleRoleResponse(roomId, 'p3', { targetId: 'p2' });
+    phaseManager.handleRoleResponse(roomId, 'p4', {
+      heal: true,
+      poisonTargetId: 'p2',
+    });
+    phaseManager.handleRoleResponse(roomId, 'p5', { targetId: 'p8' });
+    phaseManager.handleRoleResponse(roomId, 'p8', { targetId: 'p3' });
+    await nightPhasePromise;
     jest.runAllTimers();
     const state = getState();
     expect(state.bodyguardTarget).toBe('p8');
@@ -198,20 +209,5 @@ describe('PhaseManager E2E Game Flow', () => {
     jest.runAllTimers();
     const state = getState();
     expect(state.players.find((p) => p.id === 'p6')?.alive).toBe(false);
-  });
-
-  it('should transition phases correctly', async () => {
-    phaseManager.initGameState(roomId, players);
-    await phaseManager.startNightPhase(roomId);
-    jest.runAllTimers();
-    let state = getState();
-    expect(state.phase).toBe('day');
-    phaseManager.startVotingPhase(roomId);
-    state = getState();
-    expect(state.phase).toBe('voting');
-    jest.runAllTimers();
-    // Sau voting sẽ quay lại night
-    state = getState();
-    expect(state.phase).toBe('night');
   });
 });

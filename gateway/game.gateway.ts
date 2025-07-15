@@ -43,7 +43,6 @@ export class GameGateway implements OnGatewayInit {
       data.username,
     );
     await socket.join(room.roomCode);
-
     this.server.to(room.roomCode).emit('room:updatePlayers', room.players);
     return room;
   }
@@ -54,13 +53,9 @@ export class GameGateway implements OnGatewayInit {
     @MessageBody() data: { roomCode: string; gmRoomId: string },
   ) {
     const room = this.roomService.getRoom(data.roomCode);
-    if (!room) {
-      return;
-    }
-
+    if (!room) return;
     await socket.join(data.gmRoomId);
     this.phaseManager.setGmRoom(data.roomCode, data.gmRoomId);
-
     socket.emit('gm:connected', {
       roomCode: data.roomCode,
       gmRoomId: data.gmRoomId,
@@ -81,13 +76,6 @@ export class GameGateway implements OnGatewayInit {
       status: 'pending',
     };
     const success = this.roomService.addPlayer(data.roomCode, player);
-
-    const response = {
-      success,
-      playerId: socket.id,
-      message: '',
-    };
-
     if (success) {
       await socket.join(data.roomCode);
       this.server
@@ -96,11 +84,23 @@ export class GameGateway implements OnGatewayInit {
           'room:updatePlayers',
           this.roomService.getRoom(data.roomCode)?.players || [],
         );
-      response.message = 'Successfully joined room';
-    } else {
-      response.message = 'Unable to join room';
+      return {
+        success,
+        playerId: socket.id,
+        message: 'Successfully joined room',
+      };
     }
-    return response;
+    return { success, playerId: socket.id, message: 'Unable to join room' };
+  }
+
+  private isHost(socket: Socket, roomCode: string) {
+    const room = this.roomService.getRoom(roomCode);
+    return room && room.hostId === socket.id;
+  }
+
+  private emitRoomPlayers(roomCode: string) {
+    const room = this.roomService.getRoom(roomCode);
+    if (room) this.server.to(roomCode).emit('room:updatePlayers', room.players);
   }
 
   @SubscribeMessage('rq_gm:approvePlayer')
@@ -108,8 +108,7 @@ export class GameGateway implements OnGatewayInit {
     @ConnectedSocket() socket: Socket,
     @MessageBody() data: { roomCode: string; playerId: string },
   ) {
-    const room = this.roomService.getRoom(data.roomCode);
-    if (!room || room.hostId !== socket.id) {
+    if (!this.isHost(socket, data.roomCode)) {
       socket.emit('room:approvePlayerError', { message: 'Not authorized.' });
       return;
     }
@@ -118,8 +117,10 @@ export class GameGateway implements OnGatewayInit {
       data.playerId,
     );
     if (success) {
-      this.server.to(data.roomCode).emit('room:updatePlayers', room.players);
-      this.server.to(data.playerId).emit('player:approved', room);
+      this.emitRoomPlayers(data.roomCode);
+      this.server
+        .to(data.playerId)
+        .emit('player:approved', this.roomService.getRoom(data.roomCode));
     } else {
       socket.emit('room:approvePlayerError', {
         message: 'Unable to approve player.',
@@ -132,15 +133,13 @@ export class GameGateway implements OnGatewayInit {
     @ConnectedSocket() socket: Socket,
     @MessageBody() data: { roomCode: string; playerId: string },
   ) {
-    const room = this.roomService.getRoom(data.roomCode);
-    if (!room || room.hostId !== socket.id) {
+    if (!this.isHost(socket, data.roomCode)) {
       socket.emit('room:rejectPlayerError', { message: 'Not authorized.' });
       return;
     }
     const success = this.roomService.rejectPlayer(data.roomCode, data.playerId);
     if (success) {
-      this.server.to(data.roomCode).emit('room:updatePlayers', room.players);
-
+      this.emitRoomPlayers(data.roomCode);
       this.server
         .to(data.playerId)
         .emit('player:rejected', { message: 'You were rejected by the GM.' });
@@ -156,13 +155,14 @@ export class GameGateway implements OnGatewayInit {
     @ConnectedSocket() socket: Socket,
     @MessageBody() data: { roomCode: string },
   ) {
-    const room = this.roomService.getRoom(data.roomCode);
-    if (!room || room.hostId !== socket.id) {
+    if (!this.isHost(socket, data.roomCode)) {
       socket.emit('room:updatePlayersError', { message: 'Not authorized.' });
       return;
     }
-    const players = this.roomService.getPlayers(data.roomCode);
-    socket.emit('room:updatePlayers', players);
+    socket.emit(
+      'room:updatePlayers',
+      this.roomService.getPlayers(data.roomCode),
+    );
   }
 
   @SubscribeMessage('rq_player:getPlayers')
@@ -170,8 +170,10 @@ export class GameGateway implements OnGatewayInit {
     @ConnectedSocket() socket: Socket,
     @MessageBody() data: { roomCode: string },
   ) {
-    const players = this.roomService.getPlayers(data.roomCode);
-    socket.emit('room:updatePlayers', players);
+    socket.emit(
+      'room:updatePlayers',
+      this.roomService.getPlayers(data.roomCode),
+    );
   }
 
   @SubscribeMessage('rq_gm:randomizeRoles')
@@ -179,9 +181,7 @@ export class GameGateway implements OnGatewayInit {
     @ConnectedSocket() socket: Socket,
     @MessageBody() data: { roomCode: string; roles: Role[] },
   ) {
-    const room = this.roomService.getRoom(data.roomCode);
-
-    if (!room || room.hostId !== socket.id) {
+    if (!this.isHost(socket, data.roomCode)) {
       socket.emit('room:randomizeRolesError', { message: 'Not authorized.' });
       return 'Not authorized.';
     }
@@ -193,17 +193,11 @@ export class GameGateway implements OnGatewayInit {
       'hunter',
       'bodyguard',
     ];
-    if (!data.roles.every((role) => validRoles.includes(role))) {
+    if (!data.roles.every((role) => validRoles.includes(role)))
       return 'Invalid roles provided';
-    }
-    const success = this.roomService.randomizeRoles(
-      data.roomCode,
-      data.roles as any as import('../types').Role[],
-    );
-
+    const success = this.roomService.randomizeRoles(data.roomCode, data.roles);
     if (success) {
       const updatedRoom = this.roomService.getRoom(data.roomCode);
-
       if (updatedRoom) {
         updatedRoom.players
           .filter((player) => player.status === 'approved')
@@ -214,12 +208,11 @@ export class GameGateway implements OnGatewayInit {
           });
       }
       return '';
-    } else {
-      socket.emit('room:randomizeRolesError', {
-        message: 'Unable to randomize roles',
-      });
-      return 'Unable to randomize roles';
     }
+    socket.emit('room:randomizeRolesError', {
+      message: 'Unable to randomize roles',
+    });
+    return 'Unable to randomize roles';
   }
 
   @SubscribeMessage('rq_player:ready')
@@ -229,19 +222,15 @@ export class GameGateway implements OnGatewayInit {
   ) {
     const room = this.roomService.getRoom(data.roomCode);
     const success = this.roomService.playerReady(data.roomCode, socket.id);
-
     if (room) {
-      this.server.to(data.roomCode).emit('room:updatePlayers', room.players);
+      this.emitRoomPlayers(data.roomCode);
       if (success) {
         socket.emit('player:readySuccess', { roomCode: data.roomCode });
         this.server.to(data.roomCode).emit('room:readySuccess');
         const approvedPlayers = room.players.filter(
           (player) => player.status === 'approved',
         );
-
-        // Get GM room ID if exists
         const gmRoomId = `gm_${data.roomCode}`;
-
         this.phaseManager.initGameState(
           data.roomCode,
           approvedPlayers,
@@ -283,15 +272,23 @@ export class GameGateway implements OnGatewayInit {
     }
   }
 
+  private handleRoleAction(
+    vote: string,
+    @ConnectedSocket() socket: Socket,
+    @MessageBody() data: { roomCode: string },
+  ) {
+    this.phaseManager.handleRoleResponse(data.roomCode, socket.id, {
+      ...data,
+      vote,
+    });
+  }
+
   @SubscribeMessage('night:werewolf-action:done')
   handleWerewolfActionDone(
     @ConnectedSocket() socket: Socket,
     @MessageBody() data: { roomCode: string; targetId: string },
   ) {
-    this.phaseManager.handleRoleResponse(data.roomCode, socket.id, {
-      targetId: data.targetId,
-      vote: 'werewolf',
-    });
+    this.handleRoleAction('werewolf', socket, data);
   }
 
   @SubscribeMessage('night:seer-action:done')
@@ -299,27 +296,16 @@ export class GameGateway implements OnGatewayInit {
     @ConnectedSocket() socket: Socket,
     @MessageBody() data: { roomCode: string; targetId: string },
   ) {
-    this.phaseManager.handleRoleResponse(data.roomCode, socket.id, {
-      targetId: data.targetId,
-      vote: 'seer',
-    });
+    this.handleRoleAction('seer', socket, data);
   }
 
   @SubscribeMessage('night:witch-action:done')
   handleWitchActionDone(
     @ConnectedSocket() socket: Socket,
     @MessageBody()
-    data: {
-      roomCode: string;
-      heal: boolean;
-      poisonTargetId?: string;
-    },
+    data: { roomCode: string; heal: boolean; poisonTargetId?: string },
   ) {
-    this.phaseManager.handleRoleResponse(data.roomCode, socket.id, {
-      heal: data.heal,
-      poisonTargetId: data?.poisonTargetId,
-      vote: 'witch',
-    });
+    this.handleRoleAction('witch', socket, data);
   }
 
   @SubscribeMessage('night:bodyguard-action:done')
@@ -327,10 +313,7 @@ export class GameGateway implements OnGatewayInit {
     @ConnectedSocket() socket: Socket,
     @MessageBody() data: { roomCode: string; targetId: string },
   ) {
-    this.phaseManager.handleRoleResponse(data.roomCode, socket.id, {
-      targetId: data.targetId,
-      vote: 'bodyguard',
-    });
+    this.handleRoleAction('bodyguard', socket, data);
   }
 
   @SubscribeMessage('night:hunter-action:done')
@@ -338,10 +321,7 @@ export class GameGateway implements OnGatewayInit {
     @ConnectedSocket() socket: Socket,
     @MessageBody() data: { roomCode: string; targetId?: string },
   ) {
-    this.phaseManager.handleRoleResponse(data.roomCode, socket.id, {
-      targetId: data.targetId,
-      vote: 'hunter',
-    });
+    this.handleRoleAction('hunter', socket, data);
   }
 
   @SubscribeMessage('voting:done')

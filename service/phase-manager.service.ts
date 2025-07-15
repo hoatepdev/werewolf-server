@@ -16,16 +16,10 @@ export interface GameState {
   };
   votes: Record<string, string>;
   hunterTarget?: string;
-  lastProtected?: string; // bảo vệ đã bảo vệ ai turn vừa rồi
+  lastProtected?: string;
   phaseTimeout?: NodeJS.Timeout;
   actionsReceived?: Set<string>;
-  currentNightStep?:
-    | 'werewolf'
-    | 'seer'
-    | 'witch'
-    | 'bodyguard'
-    | 'hunter'
-    | undefined;
+  currentNightStep?: 'werewolf' | 'seer' | 'witch' | 'bodyguard' | 'hunter';
   werewolfVotes?: Record<string, string>;
   gmRoomId?: string;
 }
@@ -55,6 +49,10 @@ export class PhaseManager {
     this.server = server;
   }
 
+  private delay(ms: number) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
   private getPlayersByRole(state: GameState, role: string): Player[] {
     return state.players.filter((p) => p.alive && p.role === role);
   }
@@ -79,21 +77,16 @@ export class PhaseManager {
       const state = this.gameStates.get(roomId);
       if (!state) return resolve(null);
       const rolePlayers = this.getPlayersByRole(state, role);
-      console.log('⭐ rolePlayers', rolePlayers);
       if (rolePlayers.length === 0) return resolve(null);
-
       const responses: Array<{ playerId: string; payload: RoleResponse }> = [];
       const responded = new Set<string>();
-
       this.pendingResponses.set(roomId, {
         resolve,
         responses,
         responded,
         rolePlayers,
       });
-
       rolePlayers.forEach((player) => {
-        console.log('⭐ EMIT', { playerId: player.id, event, data });
         this.server.to(player.id).emit(event, data);
       });
     });
@@ -114,9 +107,6 @@ export class PhaseManager {
     roomId: string,
     role: string,
   ): Promise<Array<{ playerId: string; payload: RoleResponse }> | null> {
-    const state = this.gameStates.get(roomId);
-    if (!state) return null;
-
     switch (role) {
       case 'werewolf':
         return await this.processWerewolfAction(roomId);
@@ -138,11 +128,9 @@ export class PhaseManager {
   ): Promise<Array<{ playerId: string; payload: RoleResponse }> | null> {
     const state = this.gameStates.get(roomId);
     if (!state) return null;
-
     const alivePlayers = state.players
       .filter((p) => p.alive && p.role !== 'werewolf')
       .map((p) => ({ id: p.id, username: p.username }));
-
     const response = await this.emitToRoleAndWaitResponse(
       roomId,
       'werewolf',
@@ -150,15 +138,9 @@ export class PhaseManager {
       {
         message: 'Sói thức dậy, hãy chọn người để cắn.',
         candidates: alivePlayers,
-        // werewolves: rolePlayers.map((w) => ({
-        //   id: w.id,
-        //   username: w.username,
-        // })),
         type: 'werewolf',
       },
     );
-    console.log('⭐ werewolf response', response);
-
     if (response && response.length > 0) {
       const votes: Record<string, string> = {};
       response.forEach((res) => {
@@ -167,24 +149,17 @@ export class PhaseManager {
           votes[res.playerId] = payload.targetId;
         }
       });
-
       const voteCounts: Record<string, number> = {};
       Object.values(votes).forEach((targetId: string) => {
         voteCounts[targetId] = (voteCounts[targetId] || 0) + 1;
       });
-
       const mostVoted = Object.entries(voteCounts).reduce((a, b) =>
         voteCounts[a[0]] > voteCounts[b[0]] ? a : b,
       );
-
       if (mostVoted && mostVoted.length === 2) {
         state.werewolfTarget = mostVoted[0];
-        console.log(
-          `⭐ Werewolf target: ${mostVoted[0]} with ${mostVoted[1]} votes`,
-        );
       }
     }
-
     return response as Array<{
       playerId: string;
       payload: RoleResponse;
@@ -196,7 +171,6 @@ export class PhaseManager {
   ): Promise<Array<{ playerId: string; payload: RoleResponse }> | null> {
     const state = this.gameStates.get(roomId);
     if (!state) return null;
-
     const alivePlayers = state.players
       .filter((p) => p.alive && p.role !== 'seer')
       .map((p) => ({
@@ -204,7 +178,6 @@ export class PhaseManager {
         username: p.username,
         isRedFlag: ['werewolf'].includes(p.role || ''),
       }));
-
     const response = await this.emitToRoleAndWaitResponse(
       roomId,
       'seer',
@@ -215,24 +188,13 @@ export class PhaseManager {
         type: 'seer',
       },
     );
-
-    console.log('⭐ seer response', response);
-
     if (response && response.length > 0) {
       const seerResponse = response[0];
       const payload = seerResponse.payload;
       if (payload.targetId) {
         state.seerTarget = payload.targetId;
-        const targetPlayer = state.players.find(
-          (p) => p.id === payload.targetId,
-        );
-        const isWerewolf = targetPlayer?.role === 'werewolf';
-        console.log(
-          `⭐ Seer checked ${targetPlayer?.username}: ${isWerewolf ? 'WEREWOLF' : 'NOT WEREWOLF'}`,
-        );
       }
     }
-
     return response as Array<{
       playerId: string;
       payload: RoleResponse;
@@ -244,7 +206,6 @@ export class PhaseManager {
   ): Promise<Array<{ playerId: string; payload: RoleResponse }> | null> {
     const state = this.gameStates.get(roomId);
     if (!state) return null;
-
     const response = await this.emitToRoleAndWaitResponse(
       roomId,
       'witch',
@@ -260,22 +221,18 @@ export class PhaseManager {
         type: 'witch',
       },
     );
-
     if (response && response.length > 0) {
       const witchResponse = response[0];
       const payload = witchResponse.payload;
       if (payload.heal) {
         state.witch.healUsed = true;
         state.witch.healTarget = state.werewolfTarget;
-        console.log(`⭐ Witch healed ${state.werewolfTarget}`);
       }
       if (payload.poisonTargetId) {
         state.witch.poisonUsed = true;
         state.witch.poisonTarget = payload.poisonTargetId;
-        console.log(`⭐ Witch poisoned ${payload.poisonTargetId}`);
       }
     }
-
     return response as Array<{
       playerId: string;
       payload: RoleResponse;
@@ -287,11 +244,9 @@ export class PhaseManager {
   ): Promise<Array<{ playerId: string; payload: RoleResponse }> | null> {
     const state = this.gameStates.get(roomId);
     if (!state) return null;
-
     const alivePlayers = state.players
       .filter((p) => p.alive && p.id !== state.lastProtected)
       .map((p) => ({ id: p.id, username: p.username }));
-
     const response = await this.emitToRoleAndWaitResponse(
       roomId,
       'bodyguard',
@@ -303,17 +258,14 @@ export class PhaseManager {
         type: 'bodyguard',
       },
     );
-
     if (response && response.length > 0) {
       const bodyguardResponse = response[0];
       const payload = bodyguardResponse.payload;
       if (payload.targetId) {
         state.bodyguardTarget = payload.targetId;
         state.lastProtected = payload.targetId;
-        console.log(`⭐ Bodyguard protected ${payload.targetId}`);
       }
     }
-
     return response as Array<{
       playerId: string;
       payload: RoleResponse;
@@ -325,11 +277,9 @@ export class PhaseManager {
   ): Promise<Array<{ playerId: string; payload: RoleResponse }> | null> {
     const state = this.gameStates.get(roomId);
     if (!state) return null;
-
     const alivePlayers = state.players
       .filter((p) => p.alive)
       .map((p) => ({ id: p.id, username: p.username }));
-
     const response = await this.emitToRoleAndWaitResponse(
       roomId,
       'hunter',
@@ -340,16 +290,13 @@ export class PhaseManager {
         type: 'hunter',
       },
     );
-
     if (response && response.length > 0) {
       const hunterResponse = response[0];
       const payload = hunterResponse.payload;
       if (payload.targetId) {
         state.hunterTarget = payload.targetId;
-        console.log(`⭐ Hunter shot ${payload.targetId}`);
       }
     }
-
     return response as Array<{
       playerId: string;
       payload: RoleResponse;
@@ -359,17 +306,13 @@ export class PhaseManager {
   private resolveNightActions(roomId: string): void {
     const state = this.gameStates.get(roomId);
     if (!state) return;
-
     const diedPlayerIds = new Set<string>();
     let cause: 'werewolf' | 'witch' | 'protected' | 'hunter' = 'werewolf';
-
     let target = state.werewolfTarget;
-
     if (state.bodyguardTarget === target) {
       target = undefined;
       cause = 'protected';
     }
-
     if (
       state.witch.healTarget === state.werewolfTarget &&
       state.witch.healUsed
@@ -377,45 +320,29 @@ export class PhaseManager {
       target = undefined;
       cause = 'protected';
     }
-
     if (state.witch.poisonTarget && state.witch.poisonUsed) {
       diedPlayerIds.add(state.witch.poisonTarget);
       cause = 'witch';
     }
-
-    if (state.hunterTarget) {
-      // hunterTarget chỉ là người hunter muốn bắn, chưa chắc hunter đã chết
-      // sẽ xử lý bên dưới nếu hunter chết
-    }
-
     if (target) {
       diedPlayerIds.add(target);
       cause = 'werewolf';
     }
-
-    // Xác định hunter nào chết trong đêm
     const huntersDied = Array.from(diedPlayerIds)
       .map((id) => state.players.find((p) => p.id === id))
       .filter((p) => p && p.role === 'hunter') as Player[];
-
     for (const id of Array.from(diedPlayerIds)) {
       const player = state.players.find((p) => p.id === id);
       if (player) {
         player.alive = false;
       }
     }
-
-    // Nếu hunter chết trong đêm, tự động bắn targetId đã chọn
     for (const hunter of huntersDied) {
       if (hunter.id === state.hunterTarget) {
         this.handleHunterShoot(roomId, hunter.id);
       }
     }
-
-    console.log('⭐ nightResult', { diedPlayerIds, cause });
-
     const winner = this.checkWinCondition(roomId);
-
     if (!winner) {
       if (state.gmRoomId) {
         this.emitToGM(state.gmRoomId, 'gm:nightAction', {
@@ -429,21 +356,18 @@ export class PhaseManager {
                   .map((id) => state.players.find((p) => p.id === id)?.username)
                   .join(', ')}.`
               : `không có người chết.`
-          }. Mời mọi người bàn luận.`,
+          } Mời mọi người bàn luận.`,
           timestamp: Date.now(),
         });
       }
-
       this.emitToAllPlayers(roomId, 'game:nightResult', {
         diedPlayerIds: Array.from(diedPlayerIds),
         cause,
       });
-
       state.actionsReceived = new Set();
       state.phaseTimeout = undefined;
       state.currentNightStep = undefined;
       state.werewolfVotes = {};
-
       setTimeout(() => {
         this.startDayPhase(roomId);
       }, 3000);
@@ -493,9 +417,7 @@ export class PhaseManager {
 
   async startNightPhase(roomId: string) {
     const state = this.gameStates.get(roomId);
-
     if (!state) return;
-    // RESET state đầu night phase
     state.werewolfTarget = undefined;
     state.seerTarget = undefined;
     state.bodyguardTarget = undefined;
@@ -506,7 +428,6 @@ export class PhaseManager {
     state.currentNightStep = undefined;
     state.werewolfVotes = {};
     this.emitToAllPlayers(roomId, 'game:phaseChanged', { phase: 'night' });
-
     if (state.gmRoomId) {
       this.emitToGM(state.gmRoomId, 'gm:nightAction', {
         step: 'nightStart',
@@ -516,19 +437,19 @@ export class PhaseManager {
       });
     }
 
+    await this.delay(1000); // cho FE kịp render component
+
     const roles = ['werewolf', 'seer', 'witch', 'bodyguard', 'hunter'];
 
     for (const role of roles) {
       const rolePlayers = this.getPlayersByRole(state, role);
       if (rolePlayers.length === 0) continue;
-
       state.currentNightStep = role as
         | 'werewolf'
         | 'seer'
         | 'witch'
         | 'bodyguard'
         | 'hunter';
-
       if (state.gmRoomId) {
         this.emitToGM(state.gmRoomId, 'gm:nightAction', {
           step: role,
@@ -538,10 +459,7 @@ export class PhaseManager {
           timestamp: Date.now(),
         });
       }
-
       const response = await this.processRoleAction(roomId, role);
-      console.log(`⭐ ${role} response:`, response);
-
       if (state.gmRoomId) {
         this.emitToGM(state.gmRoomId, 'gm:nightAction', {
           step: role,
@@ -552,7 +470,6 @@ export class PhaseManager {
         });
       }
     }
-
     this.resolveNightActions(roomId);
   }
 
@@ -566,9 +483,7 @@ export class PhaseManager {
   handleRoleResponse(roomId: string, playerId: string, payload: RoleResponse) {
     const pending = this.pendingResponses.get(roomId);
     if (!pending) return;
-
     const { resolve, responses, responded, rolePlayers } = pending;
-
     if (!responded.has(playerId)) {
       responded.add(playerId);
       responses.push({ playerId, payload });
@@ -578,11 +493,7 @@ export class PhaseManager {
       if (player && player.role === 'hunter' && payload.targetId) {
         this.handleHunterShoot(roomId, payload.targetId);
       }
-
       if (responded.size === rolePlayers.length) {
-        console.log(
-          `⭐ All ${rolePlayers.length} players responded for room ${roomId}`,
-        );
         resolve(responses);
         this.pendingResponses.delete(roomId);
       }
@@ -592,11 +503,9 @@ export class PhaseManager {
   handleVotingResponse(roomId: string, playerId: string, targetId: string) {
     const state = this.gameStates.get(roomId);
     if (!state) return;
-
     if (!state.actionsReceived) {
       state.actionsReceived = new Set();
     }
-
     if (!state.actionsReceived.has(playerId)) {
       state.actionsReceived.add(playerId);
       state.votes[playerId] = targetId;
@@ -619,13 +528,13 @@ export class PhaseManager {
     state.phaseTimeout = setTimeout(() => {
       // sau 60s sẽ kiểm tra kết quả
       this.handleVoting(roomId);
-
-      this.checkWinCondition(roomId);
-
-      // const updatedState = this.gameStates.get(roomId);
-      // if (updatedState && updatedState.phase !== 'ended') {
-      //   this.startNightPhase(roomId);
-      // }
+      const winner = this.checkWinCondition(roomId);
+      if (!winner && state.gmRoomId) {
+        this.emitToGM(state.gmRoomId, 'gm:votingAction', {
+          type: 'votingEnded',
+          message: 'Bỏ phiếu kết thúc.',
+        });
+      }
     }, 60000);
     if (state.gmRoomId) {
       this.emitToGM(state.gmRoomId, 'gm:votingAction', {
@@ -649,8 +558,6 @@ export class PhaseManager {
     if (winner) {
       state.phase = 'ended';
       this.emitToAllPlayers(roomId, 'game:gameEnded', { winner });
-
-      // GM Audio: Game ended
       if (state.gmRoomId) {
         this.emitToGM(state.gmRoomId, 'gm:gameEnded', {
           type: 'gameEnded',
@@ -687,7 +594,6 @@ export class PhaseManager {
       lastProtected: undefined,
       gmRoomId,
     };
-    console.log('initGameState', { roomId, gmRoomId });
     this.gameStates.set(roomId, state);
   }
 }
