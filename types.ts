@@ -6,7 +6,7 @@ export type Role =
   | 'hunter'
   | 'bodyguard';
 
-export type Phase = 'night' | 'day' | 'voting' | 'ended';
+export type Phase = 'night' | 'day' | 'voting' | 'conclude' | 'ended';
 
 export type PlayerStatus = 'pending' | 'approved' | 'rejected' | 'gm';
 

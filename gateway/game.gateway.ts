@@ -264,18 +264,21 @@ export class GameGateway implements OnGatewayInit {
     switch (state.phase) {
       case 'night':
         state.phase = 'day';
-        this.phaseManager.startDay(data.roomCode);
+        this.phaseManager.startDayPhase(data.roomCode);
         break;
       case 'day':
         state.phase = 'voting';
-        this.phaseManager.startVoting(data.roomCode);
+        this.phaseManager.startVotingPhase(data.roomCode);
         break;
       case 'voting':
         this.phaseManager.checkWinCondition(data.roomCode);
         break;
-      default:
+      case 'conclude':
+      case null:
         state.phase = 'night';
-        this.phaseManager.handleNightPhase(data.roomCode);
+        this.phaseManager.startNightPhase(data.roomCode);
+        break;
+      default:
         break;
     }
   }
@@ -314,7 +317,7 @@ export class GameGateway implements OnGatewayInit {
   ) {
     this.phaseManager.handleRoleResponse(data.roomCode, socket.id, {
       heal: data.heal,
-      poisonTargetId: data.poisonTargetId,
+      poisonTargetId: data?.poisonTargetId,
       vote: 'witch',
     });
   }
@@ -339,5 +342,17 @@ export class GameGateway implements OnGatewayInit {
       targetId: data.targetId,
       vote: 'hunter',
     });
+  }
+
+  @SubscribeMessage('voting:done')
+  handleVotingDone(
+    @ConnectedSocket() socket: Socket,
+    @MessageBody() data: { roomCode: string; targetId: string },
+  ) {
+    this.phaseManager.handleVotingResponse(
+      data.roomCode,
+      socket.id,
+      data.targetId,
+    );
   }
 }

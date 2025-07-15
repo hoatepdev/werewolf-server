@@ -1,23 +1,23 @@
 import { Injectable } from '@nestjs/common';
-import { Room, Player, Role, Phase } from '../types';
-
-function generateRoomCode(length = 12): string {
-  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
-  let code = '';
-  for (let i = 0; i < length; i++) {
-    code += chars.charAt(Math.floor(Math.random() * chars.length));
-  }
-  return code;
-}
+import { Room, Player, Role } from '../types';
 
 @Injectable()
 export class RoomService {
   private rooms = new Map<string, Room>();
 
+  private static generateRoomCode(length = 12): string {
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+    let code = '';
+    for (let i = 0; i < length; i++) {
+      code += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    return code;
+  }
+
   createRoom(id: string, avatarKey: number, username: string): Room {
     let roomCode: string;
     do {
-      roomCode = generateRoomCode();
+      roomCode = RoomService.generateRoomCode();
     } while (this.rooms.has(roomCode));
     const gm: Player = {
       id,
@@ -83,26 +83,9 @@ export class RoomService {
     return true;
   }
 
-  nextPhase(roomCode: string): Phase | null {
-    const room = this.rooms.get(roomCode);
-    if (!room) return null;
-    const phaseOrder: Phase[] = ['night', 'day', 'voting', 'ended'];
-    const idx = phaseOrder.indexOf(room.phase);
-    if (idx === -1 || idx === phaseOrder.length - 1) return null;
-    room.phase = phaseOrder[idx + 1];
-    return room.phase;
-  }
-
-  getPendingPlayers(roomCode: string): Player[] {
-    const room = this.rooms.get(roomCode);
-    if (!room) return [];
-    return room.players.filter((p) => p.status === 'pending');
-  }
-
   getPlayers(roomCode: string): Player[] {
     const room = this.rooms.get(roomCode);
-    if (!room) return [];
-    return room.players;
+    return room ? room.players : [];
   }
 
   randomizeRoles(roomCode: string, roles: Role[]): boolean {
