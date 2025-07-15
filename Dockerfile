@@ -16,4 +16,4 @@ COPY --from=builder /app/node_modules ./node_modules
 RUN addgroup -g 1001 -S appgroup && adduser -S appuser -u 1001 -G appgroup
 USER appuser
 EXPOSE 3100
-CMD ["node", "dist/main.js"] 
+CMD ["node", "dist/src/main.js"] 
