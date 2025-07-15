@@ -1,0 +1,42 @@
+version: '3.8'
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: masoi-app
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - NODE_ENV=production
+      - DATABASE_URL=postgres://postgres:postgres@db:5432/masoi
+    ports:
+      - '3000:3000'
+    depends_on:
+      - db
+    networks:
+      - masoi-net
+
+  db:
+    image: postgres:15-alpine
+    container_name: masoi-db
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=masoi
+    ports:
+      - '5432:5432'
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    networks:
+      - masoi-net
+
+volumes:
+  db_data:
+
+networks:
+  masoi-net:
+    driver: bridge
