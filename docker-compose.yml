@@ -5,8 +5,8 @@ services:
     container_name: masoi-nginx
     image: nginx:latest
     ports:
-      - '8081:80'
-      - '8443:443'
+      - '8081:80' # HTTP sẽ redirect sang HTTPS
+      - '8443:443' # HTTPS thực sự listen trong container (443), mapped ra ngoài (8443)
     volumes:
       - ./nginx/default.conf:/etc/nginx/conf.d/default.conf
       - /etc/letsencrypt/live/masoi.hoatepdev.site/fullchain.pem:/etc/nginx/ssl/fullchain.pem:ro
@@ -29,7 +29,7 @@ services:
       - ALLOWED_ORIGINS=${ALLOWED_ORIGINS}
       - PORT=${PORT}
     ports:
-      - '3600:4001'
+      - '3600:4001' # Socket app chạy ở đây
     networks:
       - masoi-net
 
