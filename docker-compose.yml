@@ -12,6 +12,8 @@ services:
       - ./nginx/ssl:/etc/nginx/ssl
     depends_on:
       - app
+    networks:
+      - masoi-net
 
   app:
     build:
