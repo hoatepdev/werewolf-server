@@ -88,12 +88,52 @@ export class RoomService {
     return room ? room.players : [];
   }
 
+  eliminatePlayer(
+    roomCode: string,
+    playerId: string,
+    reason: string = 'GM elimination',
+  ): boolean {
+    const room = this.rooms.get(roomCode);
+    if (!room) return false;
+
+    const player = room.players.find((p) => p.id === playerId);
+    if (!player || player.status !== 'approved') return false;
+
+    player.alive = false;
+
+    room.actions.push({
+      type: 'gm_elimination',
+      playerId,
+      reason,
+      timestamp: Date.now(),
+    });
+
+    return true;
+  }
+
+  revivePlayer(roomCode: string, playerId: string): boolean {
+    const room = this.rooms.get(roomCode);
+    if (!room) return false;
+
+    const player = room.players.find((p) => p.id === playerId);
+    if (!player || player.status !== 'approved') return false;
+
+    player.alive = true;
+
+    room.actions.push({
+      type: 'gm_revival',
+      playerId,
+      timestamp: Date.now(),
+    });
+
+    return true;
+  }
+
   randomizeRoles(roomCode: string, roles: Role[]): boolean {
     const room = this.rooms.get(roomCode);
     if (!room) return false;
     const approvedPlayers = room.players.filter((p) => p.status === 'approved');
     if (roles.length !== approvedPlayers.length) return false;
-    // Shuffle roles for randomness
     const shuffledRoles = [...roles];
     for (let i = shuffledRoles.length - 1; i > 0; i--) {
       const j = Math.floor(Math.random() * (i + 1));

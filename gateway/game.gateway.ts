@@ -101,7 +101,13 @@ export class GameGateway implements OnGatewayInit {
 
   private emitRoomPlayers(roomCode: string) {
     const room = this.roomService.getRoom(roomCode);
-    if (room) this.server.to(roomCode).emit('room:updatePlayers', room.players);
+    if (room) {
+      this.server.to(roomCode).emit('room:updatePlayers', room.players);
+      const gmRoomId = `gm_${roomCode}`;
+      this.server
+        .to(gmRoomId)
+        .emit('gm:playersUpdate', { players: room.players });
+    }
   }
 
   @SubscribeMessage('rq_gm:approvePlayer')
@@ -160,10 +166,82 @@ export class GameGateway implements OnGatewayInit {
       socket.emit('room:updatePlayersError', { message: 'Not authorized.' });
       return;
     }
-    socket.emit(
-      'room:updatePlayers',
-      this.roomService.getPlayers(data.roomCode),
+    const players = this.roomService.getPlayers(data.roomCode);
+    socket.emit('gm:playersUpdate', { players });
+  }
+
+  @SubscribeMessage('rq_gm:eliminatePlayer')
+  handleGmEliminatePlayer(
+    @ConnectedSocket() socket: Socket,
+    @MessageBody() data: { roomCode: string; playerId: string; reason: string },
+  ) {
+    if (!this.isHost(socket, data.roomCode)) {
+      socket.emit('gm:eliminatePlayerError', { message: 'Not authorized.' });
+      return;
+    }
+
+    const success = this.roomService.eliminatePlayer(
+      data.roomCode,
+      data.playerId,
+      data.reason,
     );
+
+    if (success) {
+      const players = this.roomService.getPlayers(data.roomCode);
+      const gmRoomId = `gm_${data.roomCode}`;
+
+      this.server.to(gmRoomId).emit('gm:playersUpdate', { players });
+      this.server.to(data.roomCode).emit('room:updatePlayers', players);
+
+      const eliminatedPlayer = players.find((p) => p.id === data.playerId);
+      if (eliminatedPlayer) {
+        this.server.to(gmRoomId).emit('gm:nightAction', {
+          step: 'gm_elimination',
+          action: 'eliminate',
+          message: `GM đã loại bỏ ${eliminatedPlayer.username}: ${data.reason}`,
+          timestamp: Date.now(),
+        });
+      }
+    } else {
+      socket.emit('gm:eliminatePlayerError', {
+        message: 'Failed to eliminate player.',
+      });
+    }
+  }
+
+  @SubscribeMessage('rq_gm:revivePlayer')
+  handleGmRevivePlayer(
+    @ConnectedSocket() socket: Socket,
+    @MessageBody() data: { roomCode: string; playerId: string },
+  ) {
+    if (!this.isHost(socket, data.roomCode)) {
+      socket.emit('gm:revivePlayerError', { message: 'Not authorized.' });
+      return;
+    }
+
+    const success = this.roomService.revivePlayer(data.roomCode, data.playerId);
+
+    if (success) {
+      const players = this.roomService.getPlayers(data.roomCode);
+      const gmRoomId = `gm_${data.roomCode}`;
+
+      this.server.to(gmRoomId).emit('gm:playersUpdate', { players });
+      this.server.to(data.roomCode).emit('room:updatePlayers', players);
+
+      const revivedPlayer = players.find((p) => p.id === data.playerId);
+      if (revivedPlayer) {
+        this.server.to(gmRoomId).emit('gm:nightAction', {
+          step: 'gm_revival',
+          action: 'revive',
+          message: `GM đã hồi sinh ${revivedPlayer.username}`,
+          timestamp: Date.now(),
+        });
+      }
+    } else {
+      socket.emit('gm:revivePlayerError', {
+        message: 'Failed to revive player.',
+      });
+    }
   }
 
   @SubscribeMessage('rq_player:getPlayers')

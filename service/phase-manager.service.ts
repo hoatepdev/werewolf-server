@@ -517,6 +517,12 @@ export class PhaseManager {
     if (!state) return;
     state.phase = 'day';
     this.emitToAllPlayers(roomId, 'game:phaseChanged', { phase: 'day' });
+    if (state.gmRoomId) {
+      this.emitToGM(state.gmRoomId, 'gm:votingAction', {
+        type: 'phaseChanged',
+        message: 'Chuyển sang giai đoạn ngày, các bạn có thể thảo luận.',
+      });
+    }
   }
 
   startVotingPhase(roomId: string): void {
