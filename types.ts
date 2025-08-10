@@ -4,7 +4,8 @@ export type Role =
   | 'seer'
   | 'witch'
   | 'hunter'
-  | 'bodyguard';
+  | 'bodyguard'
+  | 'tanner';
 
 export type Phase = 'night' | 'day' | 'voting' | 'conclude' | 'ended';
 

@@ -1,6 +1,6 @@
 # Masoi Server
 
-A scalable, real-time backend for the 5Star Wolves (Ma Sói) game, built with [NestJS](https://nestjs.com/) and Socket.IO.
+A scalable, real-time backend for the 5Star Werewolf (Ma Sói) game, built with [NestJS](https://nestjs.com/) and Socket.IO.
 
 ## Features
 

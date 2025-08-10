@@ -99,6 +99,7 @@ export class PhaseManager {
       witch: 'Phù thủy',
       bodyguard: 'Bảo vệ',
       hunter: 'Thợ săn',
+      tanner: 'Chán đời',
     };
     return roleNames[role as keyof typeof roleNames];
   }
@@ -328,20 +329,21 @@ export class PhaseManager {
       diedPlayerIds.add(target);
       cause = 'werewolf';
     }
-    const huntersDied = Array.from(diedPlayerIds)
-      .map((id) => state.players.find((p) => p.id === id))
-      .filter((p) => p && p.role === 'hunter') as Player[];
+    // Mark players as dead first
     for (const id of Array.from(diedPlayerIds)) {
       const player = state.players.find((p) => p.id === id);
       if (player) {
         player.alive = false;
       }
     }
-    for (const hunter of huntersDied) {
-      if (hunter.id === state.hunterTarget) {
-        this.handleHunterShoot(roomId, hunter.id);
-      }
-    }
+
+    // Check if any hunters died during the night
+    const huntersDied = Array.from(diedPlayerIds)
+      .map((id) => state.players.find((p) => p.id === id))
+      .filter((p) => p && p.role === 'hunter') as Player[];
+
+    // If hunters died, they get to shoot (but this is handled by client-side logic)
+    // The server will wait for hunter death shoot events
     const winner = this.checkWinCondition(roomId);
     if (!winner) {
       if (state.gmRoomId) {
@@ -391,14 +393,35 @@ export class PhaseManager {
     }
     const eliminated = state.players.find((p) => p.id === eliminatedPlayerId);
     if (eliminated) eliminated.alive = false;
-    const cause: 'vote' | 'hunter' =
-      eliminated && eliminated.role === 'hunter' ? 'hunter' : 'vote';
-    if (eliminated && eliminated.role === 'hunter') {
-      if (state.hunterTarget) {
-        this.handleHunterShoot(roomId, state.hunterTarget);
+
+    // Check if tanner was voted out - they win immediately
+    if (eliminated && eliminated.role === 'tanner') {
+      state.phase = 'ended';
+      this.emitToAllPlayers(roomId, 'game:gameEnded', { winner: 'tanner' });
+      if (state.gmRoomId) {
+        this.emitToGM(state.gmRoomId, 'gm:gameEnded', {
+          type: 'gameEnded',
+          message: `Trò chơi kết thúc. Chán đời thắng khi bị vote chết!`,
+          winner: 'tanner',
+        });
       }
       return;
     }
+
+    const cause: 'vote' | 'hunter' =
+      eliminated && eliminated.role === 'hunter' ? 'hunter' : 'vote';
+
+    // Handle hunter death shooting
+    if (eliminated && eliminated.role === 'hunter') {
+      // Emit voting result first
+      this.emitToAllPlayers(roomId, 'votingResult', {
+        eliminatedPlayerId,
+        cause,
+      });
+      // Hunter gets to shoot - wait for their action
+      return;
+    }
+
     state.phase = 'conclude';
     if (state.gmRoomId) {
       this.emitToGM(state.gmRoomId, 'gm:votingAction', {
@@ -413,6 +436,15 @@ export class PhaseManager {
     state.votes = {};
     state.actionsReceived = new Set();
     state.phaseTimeout = undefined;
+
+    // Check win condition after voting (if not tanner or hunter)
+    const winner = this.checkWinCondition(roomId);
+    if (!winner) {
+      // Continue to next night phase
+      setTimeout(() => {
+        this.startNightPhase(roomId);
+      }, 3000);
+    }
   }
 
   async startNightPhase(roomId: string) {
@@ -552,22 +584,44 @@ export class PhaseManager {
     this.emitToAllPlayers(roomId, 'game:phaseChanged', { phase: 'voting' });
   }
 
-  checkWinCondition(roomId: string): 'villagers' | 'werewolves' | null {
+  checkWinCondition(
+    roomId: string,
+  ): 'villagers' | 'werewolves' | 'tanner' | null {
     const state = this.gameStates.get(roomId);
     if (!state) return null;
     const alivePlayers = state.players.filter((p) => p.alive);
-    const werewolves = alivePlayers.filter((p) => p.role === 'werewolf');
-    const villagers = alivePlayers.filter((p) => p.role !== 'werewolf');
-    let winner: 'villagers' | 'werewolves' | null = null;
-    if (werewolves.length === 0) winner = 'villagers';
-    if (werewolves.length >= villagers.length) winner = 'werewolves';
+    const aliveWerewolves = alivePlayers.filter((p) => p.role === 'werewolf');
+    const aliveNonWerewolves = alivePlayers.filter(
+      (p) => p.role !== 'werewolf',
+    );
+
+    let winner: 'villagers' | 'werewolves' | 'tanner' | null = null;
+
+    // Werewolves win if they equal or outnumber non-werewolves
+    if (
+      aliveWerewolves.length >= aliveNonWerewolves.length &&
+      aliveWerewolves.length > 0
+    ) {
+      winner = 'werewolves';
+    }
+    // Villagers win if all werewolves are eliminated
+    else if (aliveWerewolves.length === 0) {
+      winner = 'villagers';
+    }
+
     if (winner) {
       state.phase = 'ended';
       this.emitToAllPlayers(roomId, 'game:gameEnded', { winner });
       if (state.gmRoomId) {
+        const winnerDisplayName =
+          winner === 'villagers'
+            ? 'Dân làng'
+            : winner === 'werewolves'
+              ? 'Sói'
+              : 'Chán đời';
         this.emitToGM(state.gmRoomId, 'gm:gameEnded', {
           type: 'gameEnded',
-          message: `Trò chơi kết thúc. ${winner === 'villagers' ? 'Dân làng' : 'Sói'} thắng!`,
+          message: `Trò chơi kết thúc. ${winnerDisplayName} thắng!`,
           winner,
         });
       }
@@ -579,7 +633,77 @@ export class PhaseManager {
     const state = this.gameStates.get(roomId);
     if (!state) return;
     const target = state.players.find((p) => p.id === targetId);
-    if (target) target.alive = false;
+    if (target) {
+      target.alive = false;
+
+      // Emit hunter shot result
+      this.emitToAllPlayers(roomId, 'game:hunterShot', {
+        hunterId: state.players.find((p) => p.role === 'hunter' && !p.alive)
+          ?.id,
+        targetId: targetId,
+      });
+
+      if (state.gmRoomId) {
+        this.emitToGM(state.gmRoomId, 'gm:hunterAction', {
+          type: 'hunterShot',
+          message: `Thợ săn đã bắn ${target.username}.`,
+          targetId,
+        });
+      }
+    }
+
+    // Check win condition after hunter shot
+    const winner = this.checkWinCondition(roomId);
+    if (!winner) {
+      // Continue to next night phase if game hasn't ended
+      setTimeout(() => {
+        this.startNightPhase(roomId);
+      }, 3000);
+    }
+  }
+
+  handleTannerWin(roomId: string): void {
+    const state = this.gameStates.get(roomId);
+    if (!state) return;
+
+    state.phase = 'ended';
+    this.emitToAllPlayers(roomId, 'game:gameEnded', { winner: 'tanner' });
+    if (state.gmRoomId) {
+      this.emitToGM(state.gmRoomId, 'gm:gameEnded', {
+        type: 'gameEnded',
+        message: `Trò chơi kết thúc. Chán đời thắng!`,
+        winner: 'tanner',
+      });
+    }
+  }
+
+  handleHunterDeathShoot(
+    roomId: string,
+    hunterId: string,
+    targetId?: string,
+  ): void {
+    const state = this.gameStates.get(roomId);
+    if (!state) return;
+
+    if (targetId) {
+      this.handleHunterShoot(roomId, targetId);
+    } else {
+      // Hunter chose not to shoot
+      if (state.gmRoomId) {
+        this.emitToGM(state.gmRoomId, 'gm:hunterAction', {
+          type: 'hunterSkipped',
+          message: `Thợ săn đã bỏ qua lượt bắn.`,
+        });
+      }
+
+      // Check win condition and continue game
+      const winner = this.checkWinCondition(roomId);
+      if (!winner) {
+        setTimeout(() => {
+          this.startNightPhase(roomId);
+        }, 3000);
+      }
+    }
   }
 
   initGameState(roomId: string, players: Player[], gmRoomId?: string): void {

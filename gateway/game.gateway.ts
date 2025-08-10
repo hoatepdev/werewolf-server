@@ -104,9 +104,7 @@ export class GameGateway implements OnGatewayInit {
     if (room) {
       this.server.to(roomCode).emit('room:updatePlayers', room.players);
       const gmRoomId = `gm_${roomCode}`;
-      this.server
-        .to(gmRoomId)
-        .emit('gm:playersUpdate', { players: room.players });
+      this.server.to(gmRoomId).emit('gm:playersUpdate', room.players);
     }
   }
 
@@ -167,7 +165,8 @@ export class GameGateway implements OnGatewayInit {
       return;
     }
     const players = this.roomService.getPlayers(data.roomCode);
-    socket.emit('gm:playersUpdate', { players });
+
+    socket.emit('gm:playersUpdate', players);
   }
 
   @SubscribeMessage('rq_gm:eliminatePlayer')
@@ -190,7 +189,7 @@ export class GameGateway implements OnGatewayInit {
       const players = this.roomService.getPlayers(data.roomCode);
       const gmRoomId = `gm_${data.roomCode}`;
 
-      this.server.to(gmRoomId).emit('gm:playersUpdate', { players });
+      this.server.to(gmRoomId).emit('gm:playersUpdate', players);
       this.server.to(data.roomCode).emit('room:updatePlayers', players);
 
       const eliminatedPlayer = players.find((p) => p.id === data.playerId);
@@ -225,7 +224,7 @@ export class GameGateway implements OnGatewayInit {
       const players = this.roomService.getPlayers(data.roomCode);
       const gmRoomId = `gm_${data.roomCode}`;
 
-      this.server.to(gmRoomId).emit('gm:playersUpdate', { players });
+      this.server.to(gmRoomId).emit('gm:playersUpdate', players);
       this.server.to(data.roomCode).emit('room:updatePlayers', players);
 
       const revivedPlayer = players.find((p) => p.id === data.playerId);
@@ -271,6 +270,7 @@ export class GameGateway implements OnGatewayInit {
       'witch',
       'hunter',
       'bodyguard',
+      'tanner',
     ];
     if (!data.roles.every((role) => validRoles.includes(role)))
       return 'Invalid roles provided';
@@ -413,5 +413,35 @@ export class GameGateway implements OnGatewayInit {
       socket.id,
       data.targetId,
     );
+  }
+
+  @SubscribeMessage('game:tannerWin')
+  handleTannerWin(
+    @ConnectedSocket() socket: Socket,
+    @MessageBody() data: { roomCode: string },
+  ) {
+    this.phaseManager.handleTannerWin(data.roomCode);
+  }
+
+  @SubscribeMessage('game:hunterShoot:done')
+  handleHunterShootDone(
+    @ConnectedSocket() socket: Socket,
+    @MessageBody()
+    data: { roomCode: string; targetId?: string; winCondition?: string },
+  ) {
+    this.phaseManager.handleHunterDeathShoot(
+      data.roomCode,
+      socket.id,
+      data.targetId,
+    );
+  }
+
+  @SubscribeMessage('game:checkWinCondition')
+  handleCheckWinCondition(
+    @ConnectedSocket() socket: Socket,
+    @MessageBody() data: { roomCode: string; winner?: string },
+  ) {
+    // Let the phase manager handle win condition checking
+    this.phaseManager.checkWinCondition(data.roomCode);
   }
 }
