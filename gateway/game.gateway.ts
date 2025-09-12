@@ -33,6 +33,19 @@ export class GameGateway implements OnGatewayInit {
     this.phaseManager.setServer(this.server);
   }
 
+  private isHost(socket: Socket, roomCode: string) {
+    const room = this.roomService.getRoom(roomCode);
+    return room && room.hostId === socket.id;
+  }
+
+  private emitRoomPlayers(roomCode: string) {
+    const room = this.roomService.getRoom(roomCode);
+    if (room) {
+      this.server.to(roomCode).emit('room:updatePlayers', room.players);
+      console.log('⭐ room.players', roomCode, room.players);
+    }
+  }
+
   @SubscribeMessage('rq_gm:createRoom')
   async handleCreateRoom(
     @ConnectedSocket() socket: Socket,
@@ -44,7 +57,7 @@ export class GameGateway implements OnGatewayInit {
       data.username,
     );
     await socket.join(room.roomCode);
-    this.server.to(room.roomCode).emit('room:updatePlayers', room.players);
+    this.emitRoomPlayers(room.roomCode);
     return room;
   }
 
@@ -79,32 +92,16 @@ export class GameGateway implements OnGatewayInit {
     const success = this.roomService.addPlayer(data.roomCode, player);
     if (success) {
       await socket.join(data.roomCode);
-      this.server
-        .to(data.roomCode)
-        .emit(
-          'room:updatePlayers',
-          this.roomService.getRoom(data.roomCode)?.players || [],
-        );
+      console.log('⭐ rq_player:joinRoom', data.roomCode);
+
+      this.emitRoomPlayers(data.roomCode);
       return {
         success,
         playerId: socket.id,
         message: 'Successfully joined room',
       };
-    }
-    return { success, playerId: socket.id, message: 'Unable to join room' };
-  }
-
-  private isHost(socket: Socket, roomCode: string) {
-    const room = this.roomService.getRoom(roomCode);
-    return room && room.hostId === socket.id;
-  }
-
-  private emitRoomPlayers(roomCode: string) {
-    const room = this.roomService.getRoom(roomCode);
-    if (room) {
-      this.server.to(roomCode).emit('room:updatePlayers', room.players);
-      const gmRoomId = `gm_${roomCode}`;
-      this.server.to(gmRoomId).emit('gm:playersUpdate', room.players);
+    } else {
+      return { success, playerId: socket.id, message: 'Unable to join room' };
     }
   }
 
@@ -166,7 +163,7 @@ export class GameGateway implements OnGatewayInit {
     }
     const players = this.roomService.getPlayers(data.roomCode);
 
-    socket.emit('gm:playersUpdate', players);
+    socket.emit('room:updatePlayers', players);
   }
 
   @SubscribeMessage('rq_gm:eliminatePlayer')
@@ -187,14 +184,12 @@ export class GameGateway implements OnGatewayInit {
 
     if (success) {
       const players = this.roomService.getPlayers(data.roomCode);
-      const gmRoomId = `gm_${data.roomCode}`;
 
-      this.server.to(gmRoomId).emit('gm:playersUpdate', players);
-      this.server.to(data.roomCode).emit('room:updatePlayers', players);
+      this.emitRoomPlayers(data.roomCode);
 
       const eliminatedPlayer = players.find((p) => p.id === data.playerId);
       if (eliminatedPlayer) {
-        this.server.to(gmRoomId).emit('gm:nightAction', {
+        this.server.to(data.roomCode).emit('gm:nightAction', {
           step: 'gm_elimination',
           action: 'eliminate',
           message: `GM đã loại bỏ ${eliminatedPlayer.username}: ${data.reason}`,
@@ -222,14 +217,12 @@ export class GameGateway implements OnGatewayInit {
 
     if (success) {
       const players = this.roomService.getPlayers(data.roomCode);
-      const gmRoomId = `gm_${data.roomCode}`;
 
-      this.server.to(gmRoomId).emit('gm:playersUpdate', players);
-      this.server.to(data.roomCode).emit('room:updatePlayers', players);
+      this.emitRoomPlayers(data.roomCode);
 
       const revivedPlayer = players.find((p) => p.id === data.playerId);
       if (revivedPlayer) {
-        this.server.to(gmRoomId).emit('gm:nightAction', {
+        this.server.to(data.roomCode).emit('gm:nightAction', {
           step: 'gm_revival',
           action: 'revive',
           message: `GM đã hồi sinh ${revivedPlayer.username}`,
@@ -309,11 +302,10 @@ export class GameGateway implements OnGatewayInit {
         const approvedPlayers = room.players.filter(
           (player) => player.status === 'approved',
         );
-        const gmRoomId = `gm_${data.roomCode}`;
         this.phaseManager.initGameState(
           data.roomCode,
           approvedPlayers,
-          gmRoomId,
+          data.roomCode,
         );
       }
     }

@@ -19,7 +19,7 @@ export interface GameState {
   lastProtected?: string;
   phaseTimeout?: NodeJS.Timeout;
   actionsReceived?: Set<string>;
-  currentNightStep?: 'werewolf' | 'seer' | 'witch' | 'bodyguard' | 'hunter';
+  currentNightStep?: 'bodyguard' | 'werewolf' | 'witch' | 'seer';
   werewolfVotes?: Record<string, string>;
   gmRoomId?: string;
 }
@@ -109,16 +109,15 @@ export class PhaseManager {
     role: string,
   ): Promise<Array<{ playerId: string; payload: RoleResponse }> | null> {
     switch (role) {
+      case 'bodyguard':
+        return await this.processBodyguardAction(roomId);
       case 'werewolf':
         return await this.processWerewolfAction(roomId);
       case 'seer':
         return await this.processSeerAction(roomId);
       case 'witch':
         return await this.processWitchAction(roomId);
-      case 'bodyguard':
-        return await this.processBodyguardAction(roomId);
-      case 'hunter':
-        return await this.processHunterAction(roomId);
+
       default:
         return null;
     }
@@ -212,7 +211,7 @@ export class PhaseManager {
       'witch',
       'night:witch-action',
       {
-        message: 'Phù thủy thức dậy.',
+        message: 'Phù thủy thức dậy và chọn người để hồi sinh hoặc đầu độc.',
         killedPlayerId: state.werewolfTarget,
         canHeal: !state.witch.healUsed,
         canPoison: !state.witch.poisonUsed,
@@ -273,37 +272,6 @@ export class PhaseManager {
     }> | null;
   }
 
-  private async processHunterAction(
-    roomId: string,
-  ): Promise<Array<{ playerId: string; payload: RoleResponse }> | null> {
-    const state = this.gameStates.get(roomId);
-    if (!state) return null;
-    const alivePlayers = state.players
-      .filter((p) => p.alive)
-      .map((p) => ({ id: p.id, username: p.username }));
-    const response = await this.emitToRoleAndWaitResponse(
-      roomId,
-      'hunter',
-      'night:hunter-action',
-      {
-        message: 'Thợ săn thức dậy, hãy chọn người để bắn (nếu cần).',
-        candidates: alivePlayers,
-        type: 'hunter',
-      },
-    );
-    if (response && response.length > 0) {
-      const hunterResponse = response[0];
-      const payload = hunterResponse.payload;
-      if (payload.targetId) {
-        state.hunterTarget = payload.targetId;
-      }
-    }
-    return response as Array<{
-      playerId: string;
-      payload: RoleResponse;
-    }> | null;
-  }
-
   private resolveNightActions(roomId: string): void {
     const state = this.gameStates.get(roomId);
     if (!state) return;
@@ -338,9 +306,9 @@ export class PhaseManager {
     }
 
     // Check if any hunters died during the night
-    const huntersDied = Array.from(diedPlayerIds)
-      .map((id) => state.players.find((p) => p.id === id))
-      .filter((p) => p && p.role === 'hunter') as Player[];
+    // const huntersDied = Array.from(diedPlayerIds)
+    //   .map((id) => state.players.find((p) => p.id === id))
+    //   .filter((p) => p && p.role === 'hunter') as Player[];
 
     // If hunters died, they get to shoot (but this is handled by client-side logic)
     // The server will wait for hunter death shoot events
@@ -471,17 +439,16 @@ export class PhaseManager {
 
     await this.delay(1000); // cho FE kịp render component
 
-    const roles = ['werewolf', 'seer', 'witch', 'bodyguard', 'hunter'];
+    const roles = ['bodyguard', 'werewolf', 'witch', 'seer'];
 
     for (const role of roles) {
       const rolePlayers = this.getPlayersByRole(state, role);
       if (rolePlayers.length === 0) continue;
       state.currentNightStep = role as
-        | 'werewolf'
-        | 'seer'
-        | 'witch'
         | 'bodyguard'
-        | 'hunter';
+        | 'werewolf'
+        | 'witch'
+        | 'seer';
       if (state.gmRoomId) {
         this.emitToGM(state.gmRoomId, 'gm:nightAction', {
           step: role,
