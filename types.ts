@@ -27,4 +27,6 @@ export interface Room {
   phase: Phase;
   round: number;
   actions: any[];
+  disconnectedGmId?: string;
+  lastActivityAt: number;
 }

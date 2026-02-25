@@ -1,9 +1,80 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import { Room, Player, Role } from '../types';
 
+const ROOM_TTL_MS = 2 * 60 * 60 * 1000; // 2 hours
+const CLEANUP_INTERVAL_MS = 10 * 60 * 1000; // 10 minutes
+
 @Injectable()
-export class RoomService {
+export class RoomService implements OnModuleDestroy {
   private rooms = new Map<string, Room>();
+  private readonly logger = new Logger(RoomService.name);
+  private cleanupTimer: NodeJS.Timeout;
+
+  constructor() {
+    this.cleanupTimer = setInterval(
+      () => this.cleanupStaleRooms(),
+      CLEANUP_INTERVAL_MS,
+    );
+  }
+
+  onModuleDestroy() {
+    clearInterval(this.cleanupTimer);
+  }
+
+  private cleanupStaleRooms(): void {
+    const now = Date.now();
+    let cleaned = 0;
+    for (const [code, room] of this.rooms) {
+      if (now - room.lastActivityAt > ROOM_TTL_MS) {
+        this.rooms.delete(code);
+        cleaned++;
+      }
+    }
+    if (cleaned > 0) {
+      this.logger.log(
+        `Cleaned up ${cleaned} stale room(s). Active: ${this.rooms.size}`,
+      );
+    }
+  }
+
+  private touchRoom(roomCode: string): void {
+    const room = this.rooms.get(roomCode);
+    if (room) {
+      room.lastActivityAt = Date.now();
+    }
+  }
+
+  findRoomBySocketId(socketId: string): string | undefined {
+    for (const [code, room] of this.rooms) {
+      if (
+        room.hostId === socketId ||
+        room.players.some((p) => p.id === socketId)
+      ) {
+        return code;
+      }
+    }
+    return undefined;
+  }
+
+  setGmDisconnected(roomCode: string, gmSocketId: string): void {
+    const room = this.rooms.get(roomCode);
+    if (room) {
+      room.disconnectedGmId = gmSocketId;
+    }
+  }
+
+  isGmReconnection(roomCode: string, newSocketId: string): boolean {
+    const room = this.rooms.get(roomCode);
+    return !!room?.disconnectedGmId && room.hostId !== newSocketId;
+  }
+
+  reconnectGm(roomCode: string, newSocketId: string): void {
+    const room = this.rooms.get(roomCode);
+    if (!room) return;
+    room.hostId = newSocketId;
+    room.disconnectedGmId = undefined;
+    this.touchRoom(roomCode);
+  }
 
   private static generateRoomCode(length = 12): string {
     const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
@@ -14,10 +85,15 @@ export class RoomService {
     return code;
   }
 
-  createRoom(id: string, avatarKey: number, username: string): Room {
+  createRoom(
+    id: string,
+    avatarKey: number,
+    username: string,
+    roomCodeParam?: string,
+  ): Room {
     let roomCode: string;
     do {
-      roomCode = RoomService.generateRoomCode();
+      roomCode = roomCodeParam || RoomService.generateRoomCode();
     } while (this.rooms.has(roomCode));
     const gm: Player = {
       id,
@@ -32,6 +108,7 @@ export class RoomService {
       phase: 'night',
       round: 0,
       actions: [],
+      lastActivityAt: Date.now(),
     };
     this.rooms.set(roomCode, room);
     return room;
@@ -45,6 +122,7 @@ export class RoomService {
       phase: 'night',
       round: 0,
       actions: [],
+      lastActivityAt: Date.now(),
     };
     this.rooms.set(roomCode, room as Room);
     return room;
@@ -61,6 +139,7 @@ export class RoomService {
     if (room.players.find((p) => p.id === player.id)) return false;
     player.status = 'pending';
     room.players.push(player);
+    this.touchRoom(roomCode);
     return true;
   }
 
@@ -147,6 +226,7 @@ export class RoomService {
     });
     room.phase = 'night';
     room.round = 1;
+    this.touchRoom(roomCode);
     return true;
   }
 

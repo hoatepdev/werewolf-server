@@ -5,11 +5,12 @@ import {
   MessageBody,
   ConnectedSocket,
   OnGatewayInit,
+  OnGatewayDisconnect,
 } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
 import { RoomService } from '../service/room.service';
 import { Player, Role } from '../types';
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { PhaseManager } from '../service/phase-manager.service';
 import 'dotenv/config';
 
@@ -20,9 +21,11 @@ import 'dotenv/config';
   },
 })
 @Injectable()
-export class GameGateway implements OnGatewayInit {
+export class GameGateway implements OnGatewayInit, OnGatewayDisconnect {
   @WebSocketServer()
   server: Server;
+
+  private readonly logger = new Logger(GameGateway.name);
 
   constructor(
     private readonly roomService: RoomService,
@@ -31,6 +34,20 @@ export class GameGateway implements OnGatewayInit {
 
   afterInit() {
     this.phaseManager.setServer(this.server);
+  }
+
+  handleDisconnect(socket: Socket) {
+    const roomCode = this.roomService.findRoomBySocketId(socket.id);
+    if (!roomCode) return;
+
+    const room = this.roomService.getRoom(roomCode);
+    if (!room) return;
+
+    // GM disconnected — store gmSocketId for reconnection
+    if (room.hostId === socket.id) {
+      this.logger.warn(`GM disconnected from room ${roomCode}`);
+      this.roomService.setGmDisconnected(roomCode, socket.id);
+    }
   }
 
   private isHost(socket: Socket, roomCode: string) {
@@ -42,20 +59,47 @@ export class GameGateway implements OnGatewayInit {
     const room = this.roomService.getRoom(roomCode);
     if (room) {
       this.server.to(roomCode).emit('room:updatePlayers', room.players);
-      console.log('⭐ room.players', roomCode, room.players);
     }
+  }
+
+  private validateString(value: unknown, maxLength = 100): value is string {
+    return (
+      typeof value === 'string' && value.length > 0 && value.length <= maxLength
+    );
+  }
+
+  private validateRoomCode(data: {
+    roomCode?: unknown;
+  }): data is { roomCode: string } {
+    return this.validateString(data?.roomCode, 20);
   }
 
   @SubscribeMessage('rq_gm:createRoom')
   async handleCreateRoom(
     @ConnectedSocket() socket: Socket,
-    @MessageBody() data: { avatarKey: number; username: string },
+    @MessageBody()
+    data: { avatarKey: number; username: string; roomCode?: string },
   ) {
+    if (
+      !this.validateString(data?.username, 30) ||
+      typeof data?.avatarKey !== 'number'
+    ) {
+      return { success: false, message: 'Invalid data.' };
+    }
+    if (
+      data.roomCode !== undefined &&
+      !this.validateString(data.roomCode, 20)
+    ) {
+      return { success: false, message: 'Invalid room code.' };
+    }
+
     const room = this.roomService.createRoom(
       socket.id,
       data.avatarKey,
       data.username,
+      data.roomCode,
     );
+    this.logger.log(`Room created: ${room.roomCode}`);
     await socket.join(room.roomCode);
     this.emitRoomPlayers(room.roomCode);
     return room;
@@ -66,8 +110,21 @@ export class GameGateway implements OnGatewayInit {
     @ConnectedSocket() socket: Socket,
     @MessageBody() data: { roomCode: string; gmRoomId: string },
   ) {
+    if (
+      !this.validateRoomCode(data) ||
+      !this.validateString(data?.gmRoomId, 50)
+    )
+      return;
+
     const room = this.roomService.getRoom(data.roomCode);
     if (!room) return;
+
+    // GM reconnection: update hostId to new socket
+    if (this.roomService.isGmReconnection(data.roomCode, socket.id)) {
+      this.roomService.reconnectGm(data.roomCode, socket.id);
+      this.logger.log(`GM reconnected to room ${data.roomCode}`);
+    }
+
     await socket.join(data.gmRoomId);
     this.phaseManager.setGmRoom(data.roomCode, data.gmRoomId);
     socket.emit('gm:connected', {
@@ -83,6 +140,14 @@ export class GameGateway implements OnGatewayInit {
     @MessageBody()
     data: { roomCode: string; avatarKey: number; username: string },
   ) {
+    if (
+      !this.validateRoomCode(data) ||
+      !this.validateString(data?.username, 30) ||
+      typeof data?.avatarKey !== 'number'
+    ) {
+      return { success: false, playerId: socket.id, message: 'Invalid data.' };
+    }
+
     const player: Player = {
       id: socket.id,
       avatarKey: data.avatarKey,
@@ -92,8 +157,6 @@ export class GameGateway implements OnGatewayInit {
     const success = this.roomService.addPlayer(data.roomCode, player);
     if (success) {
       await socket.join(data.roomCode);
-      console.log('⭐ rq_player:joinRoom', data.roomCode);
-
       this.emitRoomPlayers(data.roomCode);
       return {
         success,
@@ -110,6 +173,9 @@ export class GameGateway implements OnGatewayInit {
     @ConnectedSocket() socket: Socket,
     @MessageBody() data: { roomCode: string; playerId: string },
   ) {
+    if (!this.validateRoomCode(data) || !this.validateString(data?.playerId)) {
+      return;
+    }
     if (!this.isHost(socket, data.roomCode)) {
       socket.emit('room:approvePlayerError', { message: 'Not authorized.' });
       return;
@@ -135,6 +201,9 @@ export class GameGateway implements OnGatewayInit {
     @ConnectedSocket() socket: Socket,
     @MessageBody() data: { roomCode: string; playerId: string },
   ) {
+    if (!this.validateRoomCode(data) || !this.validateString(data?.playerId)) {
+      return;
+    }
     if (!this.isHost(socket, data.roomCode)) {
       socket.emit('room:rejectPlayerError', { message: 'Not authorized.' });
       return;
@@ -157,6 +226,7 @@ export class GameGateway implements OnGatewayInit {
     @ConnectedSocket() socket: Socket,
     @MessageBody() data: { roomCode: string },
   ) {
+    if (!this.validateRoomCode(data)) return;
     if (!this.isHost(socket, data.roomCode)) {
       socket.emit('room:updatePlayersError', { message: 'Not authorized.' });
       return;
@@ -171,6 +241,9 @@ export class GameGateway implements OnGatewayInit {
     @ConnectedSocket() socket: Socket,
     @MessageBody() data: { roomCode: string; playerId: string; reason: string },
   ) {
+    if (!this.validateRoomCode(data) || !this.validateString(data?.playerId)) {
+      return;
+    }
     if (!this.isHost(socket, data.roomCode)) {
       socket.emit('gm:eliminatePlayerError', { message: 'Not authorized.' });
       return;
@@ -208,6 +281,9 @@ export class GameGateway implements OnGatewayInit {
     @ConnectedSocket() socket: Socket,
     @MessageBody() data: { roomCode: string; playerId: string },
   ) {
+    if (!this.validateRoomCode(data) || !this.validateString(data?.playerId)) {
+      return;
+    }
     if (!this.isHost(socket, data.roomCode)) {
       socket.emit('gm:revivePlayerError', { message: 'Not authorized.' });
       return;
@@ -241,6 +317,7 @@ export class GameGateway implements OnGatewayInit {
     @ConnectedSocket() socket: Socket,
     @MessageBody() data: { roomCode: string },
   ) {
+    if (!this.validateRoomCode(data)) return;
     socket.emit(
       'room:updatePlayers',
       this.roomService.getPlayers(data.roomCode),
@@ -252,6 +329,9 @@ export class GameGateway implements OnGatewayInit {
     @ConnectedSocket() socket: Socket,
     @MessageBody() data: { roomCode: string; roles: Role[] },
   ) {
+    if (!this.validateRoomCode(data) || !Array.isArray(data?.roles)) {
+      return 'Invalid data.';
+    }
     if (!this.isHost(socket, data.roomCode)) {
       socket.emit('room:randomizeRolesError', { message: 'Not authorized.' });
       return 'Not authorized.';
@@ -292,6 +372,7 @@ export class GameGateway implements OnGatewayInit {
     @ConnectedSocket() socket: Socket,
     @MessageBody() data: { roomCode: string },
   ) {
+    if (!this.validateRoomCode(data)) return;
     const room = this.roomService.getRoom(data.roomCode);
     const success = this.roomService.playerReady(data.roomCode, socket.id);
     if (room) {
@@ -316,29 +397,48 @@ export class GameGateway implements OnGatewayInit {
     @ConnectedSocket() socket: Socket,
     @MessageBody() data: { roomCode: string },
   ) {
-    const state = this.phaseManager['gameStates'].get(data.roomCode);
-    if (!state) {
-      socket.emit('room:phaseError', { message: 'Game state not found.' });
-      return;
-    }
-    switch (state.phase) {
-      case 'night':
-        state.phase = 'day';
-        this.phaseManager.startDayPhase(data.roomCode);
-        break;
+    if (!this.validateRoomCode(data)) return;
+    const currentPhase = this.phaseManager.getPhase(data.roomCode);
+
+    // Semi-auto flow: GM can only trigger specific transitions
+    switch (currentPhase) {
       case 'day':
-        state.phase = 'voting';
-        this.phaseManager.startVotingPhase(data.roomCode);
-        break;
-      case 'voting':
-        this.phaseManager.checkWinCondition(data.roomCode);
+        // GM triggers day → voting
+        if (this.phaseManager.canTransition(data.roomCode, 'voting')) {
+          this.phaseManager.startVotingPhase(data.roomCode);
+        } else {
+          socket.emit('room:phaseError', {
+            message: 'Không thể chuyển sang bỏ phiếu lúc này.',
+          });
+        }
         break;
       case 'conclude':
       case null:
-        state.phase = 'night';
-        this.phaseManager.startNightPhase(data.roomCode);
+        // GM triggers conclude/start → night
+        if (this.phaseManager.canTransition(data.roomCode, 'night')) {
+          void this.phaseManager.startNightPhase(data.roomCode);
+        } else {
+          socket.emit('room:phaseError', {
+            message: 'Không thể bắt đầu đêm lúc này.',
+          });
+        }
+        break;
+      case 'night':
+      case 'voting':
+        // Night → day and voting → conclude are automatic
+        socket.emit('room:phaseError', {
+          message: `Giai đoạn ${currentPhase} đang tự động xử lý.`,
+        });
+        break;
+      case 'ended':
+        socket.emit('room:phaseError', {
+          message: 'Trò chơi đã kết thúc.',
+        });
         break;
       default:
+        socket.emit('room:phaseError', {
+          message: 'Game state not found.',
+        });
         break;
     }
   }
@@ -359,6 +459,7 @@ export class GameGateway implements OnGatewayInit {
     @ConnectedSocket() socket: Socket,
     @MessageBody() data: { roomCode: string; targetId: string },
   ) {
+    if (!this.validateRoomCode(data)) return;
     this.handleRoleAction('werewolf', socket, data);
   }
 
@@ -367,6 +468,7 @@ export class GameGateway implements OnGatewayInit {
     @ConnectedSocket() socket: Socket,
     @MessageBody() data: { roomCode: string; targetId: string },
   ) {
+    if (!this.validateRoomCode(data)) return;
     this.handleRoleAction('seer', socket, data);
   }
 
@@ -376,6 +478,7 @@ export class GameGateway implements OnGatewayInit {
     @MessageBody()
     data: { roomCode: string; heal: boolean; poisonTargetId?: string },
   ) {
+    if (!this.validateRoomCode(data)) return;
     this.handleRoleAction('witch', socket, data);
   }
 
@@ -384,6 +487,7 @@ export class GameGateway implements OnGatewayInit {
     @ConnectedSocket() socket: Socket,
     @MessageBody() data: { roomCode: string; targetId: string },
   ) {
+    if (!this.validateRoomCode(data)) return;
     this.handleRoleAction('bodyguard', socket, data);
   }
 
@@ -392,6 +496,7 @@ export class GameGateway implements OnGatewayInit {
     @ConnectedSocket() socket: Socket,
     @MessageBody() data: { roomCode: string; targetId?: string },
   ) {
+    if (!this.validateRoomCode(data)) return;
     this.handleRoleAction('hunter', socket, data);
   }
 
@@ -400,19 +505,14 @@ export class GameGateway implements OnGatewayInit {
     @ConnectedSocket() socket: Socket,
     @MessageBody() data: { roomCode: string; targetId: string },
   ) {
+    if (!this.validateRoomCode(data) || !this.validateString(data?.targetId)) {
+      return;
+    }
     this.phaseManager.handleVotingResponse(
       data.roomCode,
       socket.id,
       data.targetId,
     );
-  }
-
-  @SubscribeMessage('game:tannerWin')
-  handleTannerWin(
-    @ConnectedSocket() socket: Socket,
-    @MessageBody() data: { roomCode: string },
-  ) {
-    this.phaseManager.handleTannerWin(data.roomCode);
   }
 
   @SubscribeMessage('game:hunterShoot:done')
@@ -421,19 +521,11 @@ export class GameGateway implements OnGatewayInit {
     @MessageBody()
     data: { roomCode: string; targetId?: string; winCondition?: string },
   ) {
+    if (!this.validateRoomCode(data)) return;
     this.phaseManager.handleHunterDeathShoot(
       data.roomCode,
       socket.id,
       data.targetId,
     );
-  }
-
-  @SubscribeMessage('game:checkWinCondition')
-  handleCheckWinCondition(
-    @ConnectedSocket() socket: Socket,
-    @MessageBody() data: { roomCode: string; winner?: string },
-  ) {
-    // Let the phase manager handle win condition checking
-    this.phaseManager.checkWinCondition(data.roomCode);
   }
 }
