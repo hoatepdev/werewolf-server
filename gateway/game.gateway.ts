@@ -34,6 +34,9 @@ export class GameGateway implements OnGatewayInit, OnGatewayDisconnect {
 
   afterInit() {
     this.phaseManager.setServer(this.server);
+    this.roomService.setOnRoomCleanup((roomCode) => {
+      this.phaseManager.cleanupRoom(roomCode);
+    });
   }
 
   handleDisconnect(socket: Socket) {
@@ -47,6 +50,15 @@ export class GameGateway implements OnGatewayInit, OnGatewayDisconnect {
     if (room.hostId === socket.id) {
       this.logger.warn(`GM disconnected from room ${roomCode}`);
       this.roomService.setGmDisconnected(roomCode, socket.id);
+    }
+
+    // Notify the rest of the room which player disconnected
+    const disconnectedPlayer = room.players.find((p) => p.id === socket.id);
+    if (disconnectedPlayer) {
+      this.server.to(roomCode).emit('room:playerDisconnected', {
+        playerId: socket.id,
+        username: disconnectedPlayer.username,
+      });
     }
   }
 
@@ -138,7 +150,12 @@ export class GameGateway implements OnGatewayInit, OnGatewayDisconnect {
   async handleJoinRoom(
     @ConnectedSocket() socket: Socket,
     @MessageBody()
-    data: { roomCode: string; avatarKey: number; username: string },
+    data: {
+      roomCode: string;
+      avatarKey: number;
+      username: string;
+      persistentPlayerId?: string;
+    },
   ) {
     if (
       !this.validateRoomCode(data) ||
@@ -150,6 +167,7 @@ export class GameGateway implements OnGatewayInit, OnGatewayDisconnect {
 
     const player: Player = {
       id: socket.id,
+      persistentId: data.persistentPlayerId,
       avatarKey: data.avatarKey,
       username: data.username,
       status: 'pending',
@@ -166,6 +184,38 @@ export class GameGateway implements OnGatewayInit, OnGatewayDisconnect {
     } else {
       return { success, playerId: socket.id, message: 'Unable to join room' };
     }
+  }
+
+  @SubscribeMessage('rq_player:rejoinRoom')
+  async handleRejoinRoom(
+    @ConnectedSocket() socket: Socket,
+    @MessageBody() data: { roomCode: string; persistentPlayerId: string },
+  ) {
+    if (
+      !this.validateRoomCode(data) ||
+      !this.validateString(data?.persistentPlayerId, 64)
+    )
+      return;
+
+    const player: Player | null = this.roomService.rejoinPlayer(
+      data.roomCode,
+      socket.id,
+      data.persistentPlayerId,
+    );
+    if (!player) return;
+
+    await socket.join(data.roomCode);
+    this.phaseManager.updatePlayerSocketId(
+      data.roomCode,
+      data.persistentPlayerId,
+      socket.id,
+    );
+    socket.emit('player:rejoined', {
+      playerId: socket.id,
+      roomCode: data.roomCode,
+    });
+    this.emitRoomPlayers(data.roomCode);
+    this.logger.log(`Player ${player.username} rejoined room ${data.roomCode}`);
   }
 
   @SubscribeMessage('rq_gm:approvePlayer')
@@ -256,6 +306,7 @@ export class GameGateway implements OnGatewayInit, OnGatewayDisconnect {
     );
 
     if (success) {
+      this.phaseManager.eliminatePlayer(data.roomCode, data.playerId);
       const players = this.roomService.getPlayers(data.roomCode);
 
       this.emitRoomPlayers(data.roomCode);
@@ -292,6 +343,7 @@ export class GameGateway implements OnGatewayInit, OnGatewayDisconnect {
     const success = this.roomService.revivePlayer(data.roomCode, data.playerId);
 
     if (success) {
+      this.phaseManager.revivePlayer(data.roomCode, data.playerId);
       const players = this.roomService.getPlayers(data.roomCode);
 
       this.emitRoomPlayers(data.roomCode);
@@ -347,6 +399,8 @@ export class GameGateway implements OnGatewayInit, OnGatewayDisconnect {
     ];
     if (!data.roles.every((role) => validRoles.includes(role)))
       return 'Invalid roles provided';
+    if (!data.roles.includes('werewolf'))
+      return 'Role list must include at least one werewolf';
     const success = this.roomService.randomizeRoles(data.roomCode, data.roles);
     if (success) {
       const updatedRoom = this.roomService.getRoom(data.roomCode);

@@ -127,14 +127,16 @@ export class GameEngine {
 
   static getSeerCandidates(
     state: GameState,
-  ): Array<{ id: string; username: string; isRedFlag: boolean }> {
+  ): Array<{ id: string; username: string }> {
     return state.players
       .filter((p) => p.alive && p.role !== 'seer')
-      .map((p) => ({
-        id: p.id,
-        username: p.username,
-        isRedFlag: p.role === 'werewolf',
-      }));
+      .map((p) => ({ id: p.id, username: p.username }));
+  }
+
+  /** Returns true if the target is a werewolf — sent back only after the seer confirms their pick. */
+  static getSeerResult(state: GameState, targetId: string): boolean {
+    const target = state.players.find((p) => p.id === targetId);
+    return target?.role === 'werewolf' ?? false;
   }
 
   static getWitchActionData(state: GameState) {
@@ -254,6 +256,10 @@ export class GameEngine {
     if (!state.actionsReceived) {
       state.actionsReceived = new Set();
     }
+    // Dead players cannot vote
+    const voter = state.players.find((p) => p.id === playerId);
+    if (!voter?.alive) return;
+
     if (!state.actionsReceived.has(playerId)) {
       state.actionsReceived.add(playerId);
       state.votes[playerId] = targetId;

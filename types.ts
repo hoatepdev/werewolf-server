@@ -13,6 +13,7 @@ export type PlayerStatus = 'pending' | 'approved' | 'rejected' | 'gm';
 
 export interface Player {
   id: string;
+  persistentId?: string;
   avatarKey: number;
   username: string;
   status: PlayerStatus;

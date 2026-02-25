@@ -21,12 +21,20 @@ export class RoomService implements OnModuleDestroy {
     clearInterval(this.cleanupTimer);
   }
 
+  private onRoomCleanup?: (roomCode: string) => void;
+
+  /** Register a callback to be invoked whenever a room is removed. */
+  setOnRoomCleanup(cb: (roomCode: string) => void): void {
+    this.onRoomCleanup = cb;
+  }
+
   private cleanupStaleRooms(): void {
     const now = Date.now();
     let cleaned = 0;
     for (const [code, room] of this.rooms) {
       if (now - room.lastActivityAt > ROOM_TTL_MS) {
         this.rooms.delete(code);
+        this.onRoomCleanup?.(code);
         cleaned++;
       }
     }
@@ -136,11 +144,36 @@ export class RoomService implements OnModuleDestroy {
     const room = this.rooms.get(roomCode);
 
     if (!room) return false;
-    if (room.players.find((p) => p.id === player.id)) return false;
+    // If a player with the same persistentId already exists, block a duplicate join
+    if (player.persistentId) {
+      const existing = room.players.find(
+        (p) => p.persistentId === player.persistentId,
+      );
+      if (existing) return false;
+    } else if (room.players.find((p) => p.id === player.id)) {
+      return false;
+    }
     player.status = 'pending';
     room.players.push(player);
     this.touchRoom(roomCode);
     return true;
+  }
+
+  /** Replace a disconnected player's socket ID with the new one. Returns the updated player or null. */
+  rejoinPlayer(
+    roomCode: string,
+    newSocketId: string,
+    persistentId: string,
+  ): Player | null {
+    const room = this.rooms.get(roomCode);
+    if (!room) return null;
+
+    const player = room.players.find((p) => p.persistentId === persistentId);
+    if (!player || player.status === 'rejected') return null;
+
+    player.id = newSocketId;
+    this.touchRoom(roomCode);
+    return player;
   }
 
   approvePlayer(roomCode: string, playerId: string): boolean {

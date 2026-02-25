@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { Server } from 'socket.io';
 import { Phase, Player } from '../types';
 import { RoomService } from './room.service';
@@ -12,6 +12,7 @@ import {
 
 @Injectable()
 export class PhaseManager {
+  private readonly logger = new Logger(PhaseManager.name);
   private gameStates = new Map<string, GameState>();
   private server: Server;
   private pendingResponses = new Map<
@@ -44,14 +45,31 @@ export class PhaseManager {
 
   // --- Transition lock ---
 
+  private readonly LOCK_TIMEOUT_MS = 5 * 60 * 1000; // 5-minute failsafe
+  private lockTimeouts = new Map<string, NodeJS.Timeout>();
+
   private acquireTransitionLock(roomId: string): boolean {
     if (this.transitionLocks.has(roomId)) return false;
     this.transitionLocks.add(roomId);
+    // Failsafe: auto-release after timeout to prevent permanent lock on crash
+    const t = setTimeout(() => {
+      this.transitionLocks.delete(roomId);
+      this.lockTimeouts.delete(roomId);
+      this.logger.warn(
+        `Transition lock for room ${roomId} force-released after timeout`,
+      );
+    }, this.LOCK_TIMEOUT_MS);
+    this.lockTimeouts.set(roomId, t);
     return true;
   }
 
   private releaseTransitionLock(roomId: string): void {
     this.transitionLocks.delete(roomId);
+    const t = this.lockTimeouts.get(roomId);
+    if (t) {
+      clearTimeout(t);
+      this.lockTimeouts.delete(roomId);
+    }
   }
 
   // --- Public phase accessor ---
@@ -231,6 +249,18 @@ export class PhaseManager {
     if (response && response.length > 0) {
       const seerResponse = response[0];
       GameEngine.applySeerAction(state, seerResponse.payload.targetId);
+
+      // Send the result only to the seer — never include it in the candidates payload
+      if (seerResponse.payload.targetId) {
+        const isWerewolf = GameEngine.getSeerResult(
+          state,
+          seerResponse.payload.targetId,
+        );
+        this.server.to(seerResponse.playerId).emit('night:seer-result', {
+          targetId: seerResponse.payload.targetId,
+          isWerewolf,
+        });
+      }
     }
 
     return response;
@@ -257,11 +287,24 @@ export class PhaseManager {
 
     if (response && response.length > 0) {
       const witchResponse = response[0];
-      GameEngine.applyWitchAction(
-        state,
-        witchResponse.payload.heal,
-        witchResponse.payload.poisonTargetId,
+
+      // Guard: witch may not poison herself, and may not heal + poison in the same night
+      const witchPlayer = state.players.find(
+        (p) => p.id === witchResponse.playerId,
       );
+      const poisonTargetId = witchResponse.payload.poisonTargetId;
+      const heal = witchResponse.payload.heal;
+
+      const selfPoison = poisonTargetId && witchPlayer?.id === poisonTargetId;
+      const bothUsed = heal && poisonTargetId;
+
+      if (selfPoison || bothUsed) {
+        this.logger.warn(
+          `Witch action rejected for ${witchResponse.playerId}: selfPoison=${String(selfPoison)}, bothUsed=${String(bothUsed)}`,
+        );
+      } else {
+        GameEngine.applyWitchAction(state, heal, poisonTargetId);
+      }
     }
 
     return response;
@@ -537,8 +580,7 @@ export class PhaseManager {
       if (state.phaseTimeout) clearTimeout(state.phaseTimeout);
       state.phaseTimeout = setTimeout(() => {
         this.handleVoting(roomId);
-        const winner = this.checkWinCondition(roomId);
-        if (!winner && state.gmRoomId) {
+        if (state.gmRoomId && state.phase !== 'ended') {
           this.emitToGM(state.gmRoomId, 'gm:votingAction', {
             type: 'votingEnded',
             message: 'Bỏ phiếu kết thúc.',
@@ -611,12 +653,6 @@ export class PhaseManager {
       responded.add(playerId);
       responses.push({ playerId, payload });
 
-      // Hunter response with targetId — mark shot immediately
-      const player = rolePlayers.find((p) => p.id === playerId);
-      if (player && player.role === 'hunter' && payload.targetId) {
-        this.handleHunterShoot(roomId, payload.targetId);
-      }
-
       if (responded.size === rolePlayers.length) {
         resolve(responses);
         this.pendingResponses.delete(roomId);
@@ -630,8 +666,19 @@ export class PhaseManager {
     targetId: string,
   ) {
     const state = this.gameStates.get(roomId);
-    if (!state) return;
+    if (!state || state.phase !== 'voting') return;
     GameEngine.recordVote(state, playerId, targetId);
+
+    // Resolve early when every alive player has voted
+    const alivePlayers = state.players.filter((p) => p.alive);
+    const votedCount = state.actionsReceived?.size ?? 0;
+    if (votedCount >= alivePlayers.length) {
+      if (state.phaseTimeout) {
+        clearTimeout(state.phaseTimeout);
+        state.phaseTimeout = undefined;
+      }
+      this.handleVoting(roomId);
+    }
   }
 
   // --- Hunter ---
@@ -705,6 +752,22 @@ export class PhaseManager {
     }
   }
 
+  /** Remove all in-memory state for a room (called when the room is cleaned up). */
+  cleanupRoom(roomId: string): void {
+    const state = this.gameStates.get(roomId);
+    if (state?.phaseTimeout) clearTimeout(state.phaseTimeout);
+    this.gameStates.delete(roomId);
+
+    const pending = this.pendingResponses.get(roomId);
+    if (pending) {
+      // Resolve with empty array so any awaiting promise unblocks
+      pending.resolve([]);
+      this.pendingResponses.delete(roomId);
+    }
+
+    this.releaseTransitionLock(roomId);
+  }
+
   // --- Init ---
 
   initGameState(
@@ -714,5 +777,38 @@ export class PhaseManager {
   ): void {
     const state = GameEngine.createInitialState(players, gmRoomId);
     this.gameStates.set(roomId, state);
+  }
+
+  /** Sync a GM elimination into the active GameState. */
+  eliminatePlayer(roomId: string, playerId: string): void {
+    const state = this.gameStates.get(roomId);
+    if (!state) return;
+    const player = state.players.find((p) => p.id === playerId);
+    if (player) player.alive = false;
+  }
+
+  /** Sync a GM revival into the active GameState. */
+  revivePlayer(roomId: string, playerId: string): void {
+    const state = this.gameStates.get(roomId);
+    if (!state) return;
+    const player = state.players.find((p) => p.id === playerId);
+    if (player) player.alive = true;
+  }
+
+  /** Update a player's socket ID in the game state after reconnect. */
+  updatePlayerSocketId(
+    roomId: string,
+    persistentId: string,
+    newSocketId: string,
+  ): void {
+    const state = this.gameStates.get(roomId);
+    if (!state) return;
+    const player = state.players.find(
+      (p) =>
+        (p as Player & { persistentId?: string }).persistentId === persistentId,
+    );
+    if (player) {
+      player.id = newSocketId;
+    }
   }
 }
