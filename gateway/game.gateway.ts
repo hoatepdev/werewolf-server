@@ -452,48 +452,56 @@ export class GameGateway implements OnGatewayInit, OnGatewayDisconnect {
     @MessageBody() data: { roomCode: string },
   ) {
     if (!this.validateRoomCode(data)) return;
-    const currentPhase = this.phaseManager.getPhase(data.roomCode);
 
-    // Semi-auto flow: GM can only trigger specific transitions
-    switch (currentPhase) {
-      case 'day':
-        // GM triggers day → voting
-        if (this.phaseManager.canTransition(data.roomCode, 'voting')) {
-          this.phaseManager.startVotingPhase(data.roomCode);
-        } else {
+    try {
+      const currentPhase = this.phaseManager.getPhase(data.roomCode);
+
+      // Semi-auto flow: GM can only trigger specific transitions
+      switch (currentPhase) {
+        case 'day':
+          // GM triggers day → voting
+          if (this.phaseManager.canTransition(data.roomCode, 'voting')) {
+            this.phaseManager.startVotingPhase(data.roomCode);
+          } else {
+            socket.emit('room:phaseError', {
+              message: 'Không thể chuyển sang bỏ phiếu lúc này.',
+            });
+          }
+          break;
+        case 'conclude':
+        case null:
+          // GM triggers conclude/start → night
+          if (this.phaseManager.canTransition(data.roomCode, 'night')) {
+            void this.phaseManager.startNightPhase(data.roomCode);
+          } else {
+            socket.emit('room:phaseError', {
+              message: 'Không thể bắt đầu đêm lúc này.',
+            });
+          }
+          break;
+        case 'night':
+        case 'voting':
+          // Night → day and voting → conclude are automatic
           socket.emit('room:phaseError', {
-            message: 'Không thể chuyển sang bỏ phiếu lúc này.',
+            message: `Giai đoạn ${currentPhase} đang tự động xử lý.`,
           });
-        }
-        break;
-      case 'conclude':
-      case null:
-        // GM triggers conclude/start → night
-        if (this.phaseManager.canTransition(data.roomCode, 'night')) {
-          void this.phaseManager.startNightPhase(data.roomCode);
-        } else {
+          break;
+        case 'ended':
           socket.emit('room:phaseError', {
-            message: 'Không thể bắt đầu đêm lúc này.',
+            message: 'Trò chơi đã kết thúc.',
           });
-        }
-        break;
-      case 'night':
-      case 'voting':
-        // Night → day and voting → conclude are automatic
-        socket.emit('room:phaseError', {
-          message: `Giai đoạn ${currentPhase} đang tự động xử lý.`,
-        });
-        break;
-      case 'ended':
-        socket.emit('room:phaseError', {
-          message: 'Trò chơi đã kết thúc.',
-        });
-        break;
-      default:
-        socket.emit('room:phaseError', {
-          message: 'Game state not found.',
-        });
-        break;
+          break;
+        default:
+          socket.emit('room:phaseError', {
+            message: 'Game state not found.',
+          });
+          break;
+      }
+    } catch (error) {
+      this.logger.error(`Error in nextPhase for room ${data.roomCode}`, error);
+      socket.emit('room:phaseError', {
+        message: 'Lỗi hệ thống. Vui lòng thử lại.',
+      });
     }
   }
 

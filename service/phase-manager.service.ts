@@ -94,11 +94,7 @@ export class PhaseManager {
     }
   }
 
-  private emitToAllPlayers(
-    roomId: string,
-    event: string,
-    payload?: any,
-  ): void {
+  private emitToAllPlayers(roomId: string, event: string, payload?: any): void {
     this.server.to(roomId).emit(event, payload);
   }
 
@@ -132,10 +128,15 @@ export class PhaseManager {
       const rolePlayers = GameEngine.getPlayersByRole(state, role);
       if (rolePlayers.length === 0) return resolve(null);
 
-      const responses: Array<{ playerId: string; payload: RoleResponse }> =
-        [];
+      const responses: Array<{ playerId: string; payload: RoleResponse }> = [];
       const responded = new Set<string>();
       const timeoutMs = this.ROLE_TIMEOUTS[role] || 15000;
+
+      // Cleanup function to prevent memory leaks
+      const cleanup = () => {
+        clearTimeout(timeoutHandle);
+        this.pendingResponses.delete(roomId);
+      };
 
       // Timeout: auto-resolve with defaults if players don't respond
       const timeoutHandle = setTimeout(() => {
@@ -150,8 +151,7 @@ export class PhaseManager {
 
             // Notify timed-out player
             this.server.to(player.id).emit('night:action-timeout', {
-              message:
-                'Bạn đã hết thời gian. Lượt của bạn đã bị bỏ qua.',
+              message: 'Bạn đã hết thời gian. Lượt của bạn đã bị bỏ qua.',
             });
           }
         }
@@ -165,13 +165,13 @@ export class PhaseManager {
           });
         }
 
+        cleanup();
         resolve(responses);
-        this.pendingResponses.delete(roomId);
       }, timeoutMs);
 
       this.pendingResponses.set(roomId, {
         resolve: (value) => {
-          clearTimeout(timeoutHandle);
+          cleanup();
           resolve(value as typeof responses);
         },
         responses,
@@ -278,8 +278,7 @@ export class PhaseManager {
       'witch',
       'night:witch-action',
       {
-        message:
-          'Phù thủy thức dậy và chọn người để hồi sinh hoặc đầu độc.',
+        message: 'Phù thủy thức dậy và chọn người để hồi sinh hoặc đầu độc.',
         ...witchData,
         type: 'witch',
       },
@@ -362,12 +361,11 @@ export class PhaseManager {
               ? `Hôm qua có ${result.deaths.length} người chết, đó là: ${result.deaths
                   .map(
                     (d) =>
-                      state.players.find((p) => p.id === d.playerId)
-                        ?.username,
+                      state.players.find((p) => p.id === d.playerId)?.username,
                   )
                   .join(', ')}.`
               : `Hôm qua không có người chết.`
-          } Mời mọi người bàn luận.`,
+          }`,
           timestamp: Date.now(),
         });
       }
@@ -375,10 +373,7 @@ export class PhaseManager {
       this.emitToAllPlayers(roomId, 'game:nightResult', {
         diedPlayerIds,
         deaths: result.deaths,
-        cause:
-          result.deaths.length > 0
-            ? result.deaths[0].cause
-            : 'protected',
+        cause: result.deaths.length > 0 ? result.deaths[0].cause : 'protected',
       });
 
       GameEngine.resetNightState(state);
@@ -579,12 +574,19 @@ export class PhaseManager {
 
       if (state.phaseTimeout) clearTimeout(state.phaseTimeout);
       state.phaseTimeout = setTimeout(() => {
-        this.handleVoting(roomId);
-        if (state.gmRoomId && state.phase !== 'ended') {
-          this.emitToGM(state.gmRoomId, 'gm:votingAction', {
-            type: 'votingEnded',
-            message: 'Bỏ phiếu kết thúc.',
-          });
+        try {
+          this.handleVoting(roomId);
+          if (state.gmRoomId && state.phase !== 'ended') {
+            this.emitToGM(state.gmRoomId, 'gm:votingAction', {
+              type: 'votingEnded',
+              message: 'Bỏ phiếu kết thúc.',
+            });
+          }
+        } catch (error) {
+          this.logger.error(
+            `Error in voting timeout for room ${roomId}`,
+            error,
+          );
         }
       }, 60000);
 
@@ -599,6 +601,21 @@ export class PhaseManager {
       this.emitToAllPlayers(roomId, 'game:phaseChanged', {
         phase: 'voting',
       });
+    } catch (error) {
+      this.logger.error(
+        `Error starting voting phase for room ${roomId}`,
+        error,
+      );
+      // Rollback phase and cleanup on error
+      const state = this.gameStates.get(roomId);
+      if (state) {
+        if (state.phaseTimeout) {
+          clearTimeout(state.phaseTimeout);
+          state.phaseTimeout = undefined;
+        }
+        // Rollback to day phase so game can continue
+        state.phase = 'day';
+      }
     } finally {
       this.releaseTransitionLock(roomId);
     }
@@ -639,11 +656,7 @@ export class PhaseManager {
 
   // --- Response handlers ---
 
-  handleRoleResponse(
-    roomId: string,
-    playerId: string,
-    payload: RoleResponse,
-  ) {
+  handleRoleResponse(roomId: string, playerId: string, payload: RoleResponse) {
     const pending = this.pendingResponses.get(roomId);
     if (!pending) return;
 
@@ -660,11 +673,7 @@ export class PhaseManager {
     }
   }
 
-  handleVotingResponse(
-    roomId: string,
-    playerId: string,
-    targetId: string,
-  ) {
+  handleVotingResponse(roomId: string, playerId: string, targetId: string) {
     const state = this.gameStates.get(roomId);
     if (!state || state.phase !== 'voting') return;
     GameEngine.recordVote(state, playerId, targetId);
@@ -694,8 +703,7 @@ export class PhaseManager {
 
     const target = state.players.find((p) => p.id === targetId);
     this.emitToAllPlayers(roomId, 'game:hunterShot', {
-      hunterId: state.players.find((p) => p.role === 'hunter' && !p.alive)
-        ?.id,
+      hunterId: state.players.find((p) => p.role === 'hunter' && !p.alive)?.id,
       targetId,
     });
 
@@ -770,11 +778,7 @@ export class PhaseManager {
 
   // --- Init ---
 
-  initGameState(
-    roomId: string,
-    players: Player[],
-    gmRoomId?: string,
-  ): void {
+  initGameState(roomId: string, players: Player[], gmRoomId?: string): void {
     const state = GameEngine.createInitialState(players, gmRoomId);
     this.gameStates.set(roomId, state);
   }

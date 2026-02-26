@@ -19,7 +19,7 @@ describe('PhaseManager E2E Game Flow', () => {
       })),
     };
     phaseManager = new PhaseManager();
-    phaseManager.setServer(server as any);
+    phaseManager.setServer(server);
   });
 
   beforeEach(() => {

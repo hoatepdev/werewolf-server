@@ -3,6 +3,7 @@ import { Room, Player, Role } from '../types';
 
 const ROOM_TTL_MS = 2 * 60 * 60 * 1000; // 2 hours
 const CLEANUP_INTERVAL_MS = 10 * 60 * 1000; // 10 minutes
+const MAX_ROOM_CODE_RETRIES = 100; // Prevent infinite loop
 
 @Injectable()
 export class RoomService implements OnModuleDestroy {
@@ -100,8 +101,13 @@ export class RoomService implements OnModuleDestroy {
     roomCodeParam?: string,
   ): Room {
     let roomCode: string;
+    let retries = 0;
     do {
       roomCode = roomCodeParam || RoomService.generateRoomCode();
+      retries++;
+      if (retries > MAX_ROOM_CODE_RETRIES) {
+        throw new Error('Unable to generate unique room code');
+      }
     } while (this.rooms.has(roomCode));
     const gm: Player = {
       id,
@@ -119,20 +125,6 @@ export class RoomService implements OnModuleDestroy {
       lastActivityAt: Date.now(),
     };
     this.rooms.set(roomCode, room);
-    return room;
-  }
-
-  createGmRoom(roomCode: string, gmId: string): Partial<Room> {
-    const room: Partial<Room> = {
-      roomCode,
-      hostId: gmId,
-      players: [],
-      phase: 'night',
-      round: 0,
-      actions: [],
-      lastActivityAt: Date.now(),
-    };
-    this.rooms.set(roomCode, room as Room);
     return room;
   }
 
@@ -178,10 +170,19 @@ export class RoomService implements OnModuleDestroy {
 
   approvePlayer(roomCode: string, playerId: string): boolean {
     const room = this.rooms.get(roomCode);
-    if (!room) return false;
+    if (!room) {
+      this.logger.warn(`ApprovePlayer: Room ${roomCode} not found`);
+      return false;
+    }
     const player = room.players.find((p) => p.id === playerId);
-    if (!player || player.status !== 'pending') return false;
+    if (!player || player.status !== 'pending') {
+      this.logger.warn(
+        `ApprovePlayer: Invalid player ${playerId} in room ${roomCode}`,
+      );
+      return false;
+    }
     player.status = 'approved';
+    this.logger.log(`Player ${player.username} approved in room ${roomCode}`);
 
     return true;
   }
@@ -206,12 +207,23 @@ export class RoomService implements OnModuleDestroy {
     reason: string = 'GM elimination',
   ): boolean {
     const room = this.rooms.get(roomCode);
-    if (!room) return false;
+    if (!room) {
+      this.logger.warn(`EliminatePlayer: Room ${roomCode} not found`);
+      return false;
+    }
 
     const player = room.players.find((p) => p.id === playerId);
-    if (!player || player.status !== 'approved') return false;
+    if (!player || player.status !== 'approved') {
+      this.logger.warn(
+        `EliminatePlayer: Invalid player ${playerId} in room ${roomCode}`,
+      );
+      return false;
+    }
 
     player.alive = false;
+    this.logger.log(
+      `Player ${player.username} eliminated in room ${roomCode}: ${reason}`,
+    );
 
     room.actions.push({
       type: 'gm_elimination',
@@ -243,9 +255,17 @@ export class RoomService implements OnModuleDestroy {
 
   randomizeRoles(roomCode: string, roles: Role[]): boolean {
     const room = this.rooms.get(roomCode);
-    if (!room) return false;
+    if (!room) {
+      this.logger.warn(`RandomizeRoles: Room ${roomCode} not found`);
+      return false;
+    }
     const approvedPlayers = room.players.filter((p) => p.status === 'approved');
-    if (roles.length !== approvedPlayers.length) return false;
+    if (roles.length !== approvedPlayers.length) {
+      this.logger.warn(
+        `RandomizeRoles: Role count mismatch. ${roles.length} roles for ${approvedPlayers.length} players`,
+      );
+      return false;
+    }
     const shuffledRoles = [...roles];
     for (let i = shuffledRoles.length - 1; i > 0; i--) {
       const j = Math.floor(Math.random() * (i + 1));
@@ -260,6 +280,7 @@ export class RoomService implements OnModuleDestroy {
     room.phase = 'night';
     room.round = 1;
     this.touchRoom(roomCode);
+    this.logger.log(`Roles randomized in room ${roomCode}`);
     return true;
   }
 

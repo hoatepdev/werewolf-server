@@ -1,16 +1,72 @@
-import { GameEngine, GameState } from '../service/game-engine';
+import { GameEngine } from '../service/game-engine';
 import { Player } from '../types';
 
 function createPlayers(): Player[] {
   return [
-    { id: 'p1', username: 'Alice', avatarKey: 1, status: 'approved', alive: true, role: 'werewolf' },
-    { id: 'p2', username: 'Bob', avatarKey: 2, status: 'approved', alive: true, role: 'werewolf' },
-    { id: 'p3', username: 'Charlie', avatarKey: 3, status: 'approved', alive: true, role: 'seer' },
-    { id: 'p4', username: 'Diana', avatarKey: 4, status: 'approved', alive: true, role: 'witch' },
-    { id: 'p5', username: 'Eve', avatarKey: 5, status: 'approved', alive: true, role: 'bodyguard' },
-    { id: 'p6', username: 'Frank', avatarKey: 6, status: 'approved', alive: true, role: 'villager' },
-    { id: 'p7', username: 'Grace', avatarKey: 7, status: 'approved', alive: true, role: 'hunter' },
-    { id: 'p8', username: 'Hank', avatarKey: 8, status: 'approved', alive: true, role: 'tanner' },
+    {
+      id: 'p1',
+      username: 'Alice',
+      avatarKey: 1,
+      status: 'approved',
+      alive: true,
+      role: 'werewolf',
+    },
+    {
+      id: 'p2',
+      username: 'Bob',
+      avatarKey: 2,
+      status: 'approved',
+      alive: true,
+      role: 'werewolf',
+    },
+    {
+      id: 'p3',
+      username: 'Charlie',
+      avatarKey: 3,
+      status: 'approved',
+      alive: true,
+      role: 'seer',
+    },
+    {
+      id: 'p4',
+      username: 'Diana',
+      avatarKey: 4,
+      status: 'approved',
+      alive: true,
+      role: 'witch',
+    },
+    {
+      id: 'p5',
+      username: 'Eve',
+      avatarKey: 5,
+      status: 'approved',
+      alive: true,
+      role: 'bodyguard',
+    },
+    {
+      id: 'p6',
+      username: 'Frank',
+      avatarKey: 6,
+      status: 'approved',
+      alive: true,
+      role: 'villager',
+    },
+    {
+      id: 'p7',
+      username: 'Grace',
+      avatarKey: 7,
+      status: 'approved',
+      alive: true,
+      role: 'hunter',
+    },
+    {
+      id: 'p8',
+      username: 'Hank',
+      avatarKey: 8,
+      status: 'approved',
+      alive: true,
+      role: 'tanner',
+    },
   ];
 }
 
@@ -117,17 +173,21 @@ describe('GameEngine', () => {
   });
 
   describe('getSeerCandidates', () => {
-    it('should return non-seer players with isRedFlag for werewolves', () => {
+    it('should return non-seer players without revealing roles (no isRedFlag)', () => {
       const state = GameEngine.createInitialState(createPlayers());
       const candidates = GameEngine.getSeerCandidates(state);
       expect(candidates).toHaveLength(7);
       expect(candidates.find((c) => c.id === 'p3')).toBeUndefined(); // seer excluded
 
+      // Verify candidates have only id and username — no role info leaked
       const wolf = candidates.find((c) => c.id === 'p1');
-      expect(wolf?.isRedFlag).toBe(true);
+      expect(wolf).toEqual({ id: 'p1', username: 'Alice' });
 
       const villager = candidates.find((c) => c.id === 'p6');
-      expect(villager?.isRedFlag).toBe(false);
+      expect(villager).toEqual({ id: 'p6', username: 'Frank' });
+
+      // Verify no isRedFlag property
+      expect(Object.keys(candidates[0])).toEqual(['id', 'username']);
     });
   });
 
@@ -252,7 +312,9 @@ describe('GameEngine', () => {
 
       expect(result.eliminatedPlayerId).toBeNull();
       expect(result.cause).toBe('tie');
-      expect(result.tiedPlayerIds).toEqual(expect.arrayContaining(['p1', 'p2']));
+      expect(result.tiedPlayerIds).toEqual(
+        expect.arrayContaining(['p1', 'p2']),
+      );
       // No one should be dead
       expect(state.players.find((p) => p.id === 'p1')?.alive).toBe(true);
       expect(state.players.find((p) => p.id === 'p2')?.alive).toBe(true);

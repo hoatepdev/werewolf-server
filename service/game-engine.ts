@@ -58,10 +58,7 @@ const VALID_TRANSITIONS: Record<string, string[]> = {
 };
 
 export class GameEngine {
-  static createInitialState(
-    players: Player[],
-    gmRoomId?: string,
-  ): GameState {
+  static createInitialState(players: Player[], gmRoomId?: string): GameState {
     return {
       phase: null,
       players,
@@ -101,6 +98,10 @@ export class GameEngine {
     return ROLE_DISPLAY_NAMES[role] || role;
   }
 
+  private static validatePlayerId(state: GameState, playerId: string): boolean {
+    return state.players.some((p) => p.id === playerId);
+  }
+
   static canTransition(state: GameState, targetPhase: Phase): boolean {
     const currentKey = state.phase === null ? 'null' : state.phase;
     const validTargets = VALID_TRANSITIONS[currentKey];
@@ -136,7 +137,7 @@ export class GameEngine {
   /** Returns true if the target is a werewolf — sent back only after the seer confirms their pick. */
   static getSeerResult(state: GameState, targetId: string): boolean {
     const target = state.players.find((p) => p.id === targetId);
-    return target?.role === 'werewolf' ?? false;
+    return target?.role === 'werewolf' ? true : false;
   }
 
   static getWitchActionData(state: GameState) {
@@ -153,6 +154,9 @@ export class GameEngine {
   // --- Apply night actions ---
 
   static applyBodyguardAction(state: GameState, targetId?: string): void {
+    if (targetId && !this.validatePlayerId(state, targetId)) {
+      return; // Silently skip invalid target
+    }
     if (targetId) {
       state.bodyguardTarget = targetId;
       state.lastProtected = targetId;
@@ -184,6 +188,9 @@ export class GameEngine {
   }
 
   static applySeerAction(state: GameState, targetId?: string): void {
+    if (targetId && !this.validatePlayerId(state, targetId)) {
+      return; // Silently skip invalid target
+    }
     if (targetId) {
       state.seerTarget = targetId;
     }
@@ -328,9 +335,7 @@ export class GameEngine {
     state: GameState,
   ): 'villagers' | 'werewolves' | null {
     const alivePlayers = state.players.filter((p) => p.alive);
-    const aliveWerewolves = alivePlayers.filter(
-      (p) => p.role === 'werewolf',
-    );
+    const aliveWerewolves = alivePlayers.filter((p) => p.role === 'werewolf');
     const aliveNonWerewolves = alivePlayers.filter(
       (p) => p.role !== 'werewolf',
     );
@@ -352,6 +357,9 @@ export class GameEngine {
   // --- Hunter ---
 
   static applyHunterShoot(state: GameState, targetId: string): boolean {
+    if (!this.validatePlayerId(state, targetId)) {
+      return false;
+    }
     const target = state.players.find((p) => p.id === targetId);
     if (target) {
       target.alive = false;
@@ -362,10 +370,7 @@ export class GameEngine {
 
   // --- Default responses (for timeouts) ---
 
-  static getDefaultRoleResponse(
-    role: string,
-    state: GameState,
-  ): RoleResponse {
+  static getDefaultRoleResponse(role: string, state: GameState): RoleResponse {
     switch (role) {
       case 'bodyguard':
         return {};
