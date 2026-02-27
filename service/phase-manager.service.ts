@@ -540,7 +540,7 @@ export class PhaseManager {
         });
       }
 
-      await this.delay(1000);
+      await this.delay(2000);
 
       const roles = ['bodyguard', 'werewolf', 'witch', 'seer'];
 
@@ -592,7 +592,7 @@ export class PhaseManager {
     if (state.gmRoomId) {
       this.emitToGM(state.gmRoomId, 'gm:votingAction', {
         type: 'phaseChanged',
-        message: 'Chuyển sang giai đoạn ngày, các bạn có thể thảo luận.',
+        message: 'Mời các bạn bàn luận',
       });
     }
   }
