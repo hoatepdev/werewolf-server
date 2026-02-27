@@ -316,7 +316,7 @@ export class GameGateway implements OnGatewayInit, OnGatewayDisconnect {
         this.server.to(data.roomCode).emit('gm:nightAction', {
           step: 'gm_elimination',
           action: 'eliminate',
-          message: `GM đã loại bỏ ${eliminatedPlayer.username}: ${data.reason}`,
+          message: `Game master đã loại bỏ ${eliminatedPlayer.username}: ${data.reason}`,
           timestamp: Date.now(),
         });
       }

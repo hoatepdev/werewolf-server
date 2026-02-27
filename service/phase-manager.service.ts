@@ -27,10 +27,10 @@ export class PhaseManager {
   private transitionLocks = new Set<string>();
 
   private readonly ROLE_TIMEOUTS: Record<string, number> = {
-    bodyguard: 15000,
-    werewolf: 20000,
-    witch: 15000,
-    seer: 15000,
+    bodyguard: 30000,
+    werewolf: 60000,
+    witch: 30000,
+    seer: 3000,
   };
 
   constructor(private readonly roomService: RoomService) {}
@@ -390,12 +390,18 @@ export class PhaseManager {
     const state = this.gameStates.get(roomId);
     if (!state) return;
 
+    // Mark voting as resolved to prevent double-trigger
+    state.votingResolved = true;
+
     const result: VotingResult = GameEngine.resolveVoting(state);
     this.syncPlayerStatus(roomId);
 
     // Tanner wins immediately
     if (result.isTanner) {
-      this.emitToAllPlayers(roomId, 'game:gameEnded', { winner: 'tanner' });
+      this.emitToAllPlayers(roomId, 'game:gameEnded', {
+        winner: 'tanner',
+        players: state.players,
+      });
       if (state.gmRoomId) {
         this.emitToGM(state.gmRoomId, 'gm:gameEnded', {
           type: 'gameEnded',
@@ -446,6 +452,7 @@ export class PhaseManager {
 
     // Hunter voted out — wait for their shoot action
     if (result.cause === 'hunter') {
+      state.hunterShooting = true;
       this.emitToAllPlayers(roomId, 'votingResult', {
         eliminatedPlayerId: result.eliminatedPlayerId,
         cause: 'hunter',
@@ -571,6 +578,8 @@ export class PhaseManager {
       state.phase = 'voting';
       state.actionsReceived = new Set();
       state.votes = {};
+      state.votingResolved = false;
+      state.hunterShooting = false;
 
       if (state.phaseTimeout) clearTimeout(state.phaseTimeout);
       state.phaseTimeout = setTimeout(() => {
@@ -634,7 +643,10 @@ export class PhaseManager {
     if (winner) {
       state.phase = 'ended';
       this.syncPlayerStatus(roomId);
-      this.emitToAllPlayers(roomId, 'game:gameEnded', { winner });
+      this.emitToAllPlayers(roomId, 'game:gameEnded', {
+        winner,
+        players: state.players,
+      });
 
       if (state.gmRoomId) {
         const winnerDisplayName =
@@ -676,6 +688,9 @@ export class PhaseManager {
   handleVotingResponse(roomId: string, playerId: string, targetId: string) {
     const state = this.gameStates.get(roomId);
     if (!state || state.phase !== 'voting') return;
+    // Prevent double-trigger: if voting already resolved, ignore
+    if (state.votingResolved) return;
+
     GameEngine.recordVote(state, playerId, targetId);
 
     // Resolve early when every alive player has voted
@@ -730,6 +745,17 @@ export class PhaseManager {
   ): void {
     const state = this.gameStates.get(roomId);
     if (!state) return;
+
+    // Validate that hunterId matches the actual dead hunter
+    const deadHunter = state.players.find(
+      (p) => p.role === 'hunter' && !p.alive && p.id === hunterId,
+    );
+    if (!deadHunter) {
+      this.logger.warn(
+        `Invalid hunter death shoot attempt: hunterId=${hunterId} does not match dead hunter`,
+      );
+      return;
+    }
 
     if (targetId) {
       this.handleHunterShoot(roomId, targetId);

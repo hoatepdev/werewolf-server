@@ -20,6 +20,8 @@ export interface GameState {
   currentNightStep?: 'bodyguard' | 'werewolf' | 'witch' | 'seer';
   werewolfVotes?: Record<string, string>;
   gmRoomId?: string;
+  votingResolved?: boolean;
+  hunterShooting?: boolean;
 }
 
 export interface RoleResponse {
@@ -398,6 +400,7 @@ export class GameEngine {
   static resetVotingState(state: GameState): void {
     state.votes = {};
     state.actionsReceived = new Set();
+    state.votingResolved = undefined;
     if (state.phaseTimeout) {
       clearTimeout(state.phaseTimeout);
     }
