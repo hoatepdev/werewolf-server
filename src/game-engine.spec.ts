@@ -471,4 +471,275 @@ describe('GameEngine', () => {
       expect(GameEngine.getRoleDisplayName('unknown')).toBe('unknown');
     });
   });
+
+  // ── Edge cases ──────────────────────────────────────────────────────────────
+
+  describe('canTransition — full transition matrix', () => {
+    const phases = ['night', 'day', 'voting', 'conclude', 'ended'] as const;
+
+    it('should allow night -> day', () => {
+      const state = GameEngine.createInitialState(createPlayers());
+      state.phase = 'night';
+      expect(GameEngine.canTransition(state, 'day')).toBe(true);
+    });
+
+    it('should allow night -> ended (win condition shortcut)', () => {
+      const state = GameEngine.createInitialState(createPlayers());
+      state.phase = 'night';
+      expect(GameEngine.canTransition(state, 'ended')).toBe(true);
+    });
+
+    it('should allow voting -> conclude', () => {
+      const state = GameEngine.createInitialState(createPlayers());
+      state.phase = 'voting';
+      expect(GameEngine.canTransition(state, 'conclude')).toBe(true);
+    });
+
+    it('should allow voting -> ended (win condition)', () => {
+      const state = GameEngine.createInitialState(createPlayers());
+      state.phase = 'voting';
+      expect(GameEngine.canTransition(state, 'ended')).toBe(true);
+    });
+
+    it('should reject day -> night directly', () => {
+      const state = GameEngine.createInitialState(createPlayers());
+      state.phase = 'day';
+      expect(GameEngine.canTransition(state, 'night')).toBe(false);
+    });
+
+    it('should reject conclude -> voting directly', () => {
+      const state = GameEngine.createInitialState(createPlayers());
+      state.phase = 'conclude';
+      expect(GameEngine.canTransition(state, 'voting')).toBe(false);
+    });
+
+    it('should reject all transitions from ended', () => {
+      const state = GameEngine.createInitialState(createPlayers());
+      state.phase = 'ended';
+      for (const phase of phases) {
+        expect(GameEngine.canTransition(state, phase)).toBe(false);
+      }
+    });
+  });
+
+  describe('resolveNightActions — edge cases', () => {
+    it('should skip kill when no werewolf target is set', () => {
+      const state = GameEngine.createInitialState(createPlayers());
+      // No werewolfTarget set
+
+      const result = GameEngine.resolveNightActions(state);
+
+      expect(result.deaths).toHaveLength(0);
+    });
+
+    it('should skip werewolf kill when bodyguard and witch both protect same target', () => {
+      const state = GameEngine.createInitialState(createPlayers());
+      state.werewolfTarget = 'p3';
+      state.bodyguardTarget = 'p3';
+      state.witch.healTarget = 'p3'; // redundant but valid
+
+      const result = GameEngine.resolveNightActions(state);
+
+      expect(result.deaths).toHaveLength(0);
+      expect(state.players.find((p) => p.id === 'p3')?.alive).toBe(true);
+    });
+
+    it('should apply witch poison even when werewolf has no target', () => {
+      const state = GameEngine.createInitialState(createPlayers());
+      state.witch.poisonTarget = 'p6';
+
+      const result = GameEngine.resolveNightActions(state);
+
+      expect(result.deaths).toHaveLength(1);
+      expect(result.deaths[0]).toEqual({ playerId: 'p6', cause: 'witch' });
+    });
+
+    it('should not mark player as dead if werewolf target does not exist in player list', () => {
+      const state = GameEngine.createInitialState(createPlayers());
+      state.werewolfTarget = 'nonexistent';
+
+      const result = GameEngine.resolveNightActions(state);
+
+      // 'nonexistent' gets added to deaths but no player is mutated
+      expect(result.deaths).toHaveLength(1);
+      expect(state.players.every((p) => p.alive)).toBe(true);
+    });
+  });
+
+  describe('resolveVoting — edge cases', () => {
+    it('should handle a single vote', () => {
+      const state = GameEngine.createInitialState(createPlayers());
+      state.votes = { p3: 'p6' };
+
+      const result = GameEngine.resolveVoting(state);
+
+      expect(result.eliminatedPlayerId).toBe('p6');
+      expect(result.cause).toBe('vote');
+    });
+
+    it('should detect tanner self-vote as tanner win', () => {
+      const state = GameEngine.createInitialState(createPlayers());
+      state.votes = { p8: 'p8' }; // p8 = tanner, self-votes
+
+      const result = GameEngine.resolveVoting(state);
+
+      expect(result.eliminatedPlayerId).toBe('p8');
+      expect(result.isTanner).toBe(true);
+      expect(state.phase).toBe('ended');
+    });
+
+    it('should handle three-way tie with no elimination', () => {
+      const state = GameEngine.createInitialState(createPlayers());
+      state.votes = { p4: 'p1', p5: 'p2', p6: 'p3' }; // 1 vote each
+
+      const result = GameEngine.resolveVoting(state);
+
+      expect(result.eliminatedPlayerId).toBeNull();
+      expect(result.cause).toBe('tie');
+      expect(result.tiedPlayerIds).toHaveLength(3);
+    });
+  });
+
+  describe('checkWinCondition — edge cases', () => {
+    it('should return werewolves when there is exactly 1 wolf and 1 non-wolf alive', () => {
+      const state = GameEngine.createInitialState(createPlayers());
+      // Kill p2 wolf and all non-wolves except one
+      state.players[1].alive = false; // wolf2
+      state.players[2].alive = false; // seer
+      state.players[3].alive = false; // witch
+      state.players[4].alive = false; // bodyguard
+      state.players[5].alive = false; // villager1
+      state.players[6].alive = false; // villager2
+      // Now: p1=wolf (alive), p7=hunter (alive) → 1 wolf vs 1 non-wolf → wolves win
+
+      expect(GameEngine.checkWinCondition(state)).toBe('werewolves');
+    });
+
+    it('should return null when no players are alive (degenerate state)', () => {
+      const state = GameEngine.createInitialState(createPlayers());
+      state.players.forEach((p) => {
+        p.alive = false;
+      });
+
+      // No wolves alive → villagers win by the "no werewolves" rule
+      expect(GameEngine.checkWinCondition(state)).toBe('villagers');
+    });
+
+    it('should continue game when wolves are clearly outnumbered', () => {
+      const state = GameEngine.createInitialState(createPlayers());
+      // 2 wolves vs 6 non-wolves (default fixture)
+      expect(GameEngine.checkWinCondition(state)).toBeNull();
+    });
+  });
+
+  describe('applyHunterShoot — edge cases', () => {
+    it('should mark already-dead player as dead again (idempotent)', () => {
+      const state = GameEngine.createInitialState(createPlayers());
+      state.players[0].alive = false; // p1 already dead
+
+      const success = GameEngine.applyHunterShoot(state, 'p1');
+
+      expect(success).toBe(true); // p1 exists in list, so returns true
+      expect(state.players.find((p) => p.id === 'p1')?.alive).toBe(false);
+    });
+
+    it('should return false for empty target string', () => {
+      const state = GameEngine.createInitialState(createPlayers());
+      const success = GameEngine.applyHunterShoot(state, '');
+      expect(success).toBe(false);
+    });
+  });
+
+  describe('recordVote — edge cases', () => {
+    it('should ignore votes from dead players', () => {
+      const state = GameEngine.createInitialState(createPlayers());
+      state.players[2].alive = false; // p3 dead
+      state.actionsReceived = new Set();
+
+      GameEngine.recordVote(state, 'p3', 'p1');
+
+      expect(state.votes['p3']).toBeUndefined();
+    });
+
+    it('should handle vote when actionsReceived is undefined', () => {
+      const state = GameEngine.createInitialState(createPlayers());
+      state.actionsReceived = undefined;
+
+      GameEngine.recordVote(state, 'p3', 'p1');
+
+      expect(state.votes['p3']).toBe('p1');
+    });
+
+    it('should record votes from multiple players independently', () => {
+      const state = GameEngine.createInitialState(createPlayers());
+      state.actionsReceived = new Set();
+
+      GameEngine.recordVote(state, 'p3', 'p1');
+      GameEngine.recordVote(state, 'p4', 'p2');
+      GameEngine.recordVote(state, 'p5', 'p1');
+
+      expect(state.votes).toEqual({ p3: 'p1', p4: 'p2', p5: 'p1' });
+    });
+  });
+
+  describe('getDefaultRoleResponse — edge cases', () => {
+    it('should return empty when no valid werewolf targets exist', () => {
+      const state = GameEngine.createInitialState(createPlayers());
+      // Kill all non-wolves
+      state.players.forEach((p) => {
+        if (p.role !== 'werewolf') p.alive = false;
+      });
+
+      const response = GameEngine.getDefaultRoleResponse('werewolf', state);
+
+      expect(response).toEqual({});
+    });
+
+    it('should return empty for unknown role', () => {
+      const state = GameEngine.createInitialState(createPlayers());
+      const response = GameEngine.getDefaultRoleResponse('villager', state);
+      expect(response).toEqual({});
+    });
+  });
+
+  describe('getBodyguardCandidates — edge cases', () => {
+    it('should return all alive players when no lastProtected', () => {
+      const state = GameEngine.createInitialState(createPlayers());
+
+      const candidates = GameEngine.getBodyguardCandidates(state);
+
+      expect(candidates).toHaveLength(8);
+    });
+
+    it('should return empty list when only one player alive and they are lastProtected', () => {
+      const state = GameEngine.createInitialState(createPlayers());
+      state.players.forEach((p, i) => {
+        if (i > 0) p.alive = false;
+      });
+      state.lastProtected = 'p1';
+
+      const candidates = GameEngine.getBodyguardCandidates(state);
+
+      expect(candidates).toHaveLength(0);
+    });
+  });
+
+  describe('applyWerewolfVotes — edge cases', () => {
+    it('should not set target when no responses provided', () => {
+      const state = GameEngine.createInitialState(createPlayers());
+      GameEngine.applyWerewolfVotes(state, []);
+
+      expect(state.werewolfTarget).toBeUndefined();
+    });
+
+    it('should not set target when responses have no targetId', () => {
+      const state = GameEngine.createInitialState(createPlayers());
+      GameEngine.applyWerewolfVotes(state, [
+        { playerId: 'p1', payload: {} },
+        { playerId: 'p2', payload: {} },
+      ]);
+
+      expect(state.werewolfTarget).toBeUndefined();
+    });
+  });
 });

@@ -44,6 +44,15 @@ export class PhaseManager {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
+  /**
+   * Simulates a role action for a dead or absent role.
+   * Waits a random 5-10 seconds to prevent timing-based information leaks.
+   */
+  private async simulateDeadRoleAction(): Promise<void> {
+    const fakeDelayMs = Math.floor(Math.random() * 5000) + 5000; // 5000-10000ms
+    await this.delay(fakeDelayMs);
+  }
+
   // --- Transition lock ---
 
   private readonly LOCK_TIMEOUT_MS = 5 * 60 * 1000; // 5-minute failsafe
@@ -117,6 +126,11 @@ export class PhaseManager {
         roomPlayer.alive = gamePlayer.alive;
       }
     }
+  }
+
+  private resolveUsername(state: GameState, playerId: string | undefined): string | null {
+    if (!playerId) return null;
+    return state.players.find((p) => p.id === playerId)?.username ?? null;
   }
 
   // --- Role action orchestration ---
@@ -401,6 +415,43 @@ export class PhaseManager {
         cause: result.deaths.length > 0 ? result.deaths[0].cause : 'protected',
       });
 
+      // --- CAPTURE NIGHT LOG (before reset) ---
+      const saved: string[] = [];
+      // Detect bodyguard save
+      if (state.bodyguardTarget && state.bodyguardTarget === state.werewolfTarget) {
+        const name = this.resolveUsername(state, state.bodyguardTarget);
+        if (name) saved.push(name);
+      }
+      // Detect witch heal save (only if bodyguard didn't already save)
+      if (
+        state.witch.healTarget &&
+        state.witch.healTarget === state.werewolfTarget &&
+        state.bodyguardTarget !== state.werewolfTarget
+      ) {
+        const name = this.resolveUsername(state, state.witch.healTarget);
+        if (name) saved.push(name);
+      }
+      // Seer result: look up whether seer's target was a werewolf
+      let seerResult: boolean | null = null;
+      if (state.seerTarget) {
+        seerResult = GameEngine.getSeerResult(state, state.seerTarget);
+      }
+      state.gameLog.push({
+        type: 'night_result',
+        round: state.round,
+        werewolfTarget: this.resolveUsername(state, state.werewolfTarget),
+        bodyguardTarget: this.resolveUsername(state, state.bodyguardTarget),
+        seerTarget: this.resolveUsername(state, state.seerTarget),
+        seerResult,
+        witchHeal: !!state.witch.healTarget,
+        witchPoisonTarget: this.resolveUsername(state, state.witch.poisonTarget),
+        deaths: result.deaths.map((d) => ({
+          username: state.players.find((p) => p.id === d.playerId)?.username ?? d.playerId,
+          cause: d.cause,
+        })),
+        saved,
+      });
+
       GameEngine.resetNightState(state);
 
       setTimeout(() => {
@@ -425,11 +476,40 @@ export class PhaseManager {
     const result: VotingResult = GameEngine.resolveVoting(state);
     this.syncPlayerStatus(roomId);
 
+    // --- CAPTURE VOTING LOG (before reset) ---
+    state.gameLog.push({
+      type: 'voting_result',
+      round: state.round,
+      votes: Object.entries(state.votes).map(([voterId, targetId]) => ({
+        voter: state.players.find((p) => p.id === voterId)?.username ?? voterId,
+        target: state.players.find((p) => p.id === targetId)?.username ?? targetId,
+      })),
+      eliminatedPlayer: result.eliminatedPlayerId
+        ? (state.players.find((p) => p.id === result.eliminatedPlayerId)?.username ?? null)
+        : null,
+      cause: result.cause,
+      tiedPlayers: result.tiedPlayerIds?.map(
+        (id) => state.players.find((p) => p.id === id)?.username ?? id,
+      ),
+    });
+
     // Tanner wins immediately
     if (result.isTanner) {
+      state.gameLog.push({
+        type: 'game_end',
+        round: state.round,
+        winner: 'tanner',
+        totalRounds: state.round,
+        players: state.players.map((p) => ({
+          username: p.username,
+          role: p.role ?? 'unknown',
+          alive: p.alive ?? false,
+        })),
+      });
       this.emitToAllPlayers(roomId, 'game:gameEnded', {
         winner: 'tanner',
         players: state.players,
+        gameLog: state.gameLog,
       });
       if (state.gmRoomId) {
         this.emitToGM(state.gmRoomId, 'gm:gameEnded', {
@@ -545,32 +625,47 @@ export class PhaseManager {
       const roles = ['bodyguard', 'werewolf', 'witch', 'seer'];
 
       for (const role of roles) {
-        const rolePlayers = GameEngine.getPlayersByRole(state, role);
-        if (rolePlayers.length === 0) continue;
+        const aliveRolePlayers = GameEngine.getPlayersByRole(state, role);
+        const isRoleActive = aliveRolePlayers.length > 0;
 
         state.currentNightStep = role as GameState['currentNightStep'];
 
+        // GM always sees role start (reads the script aloud)
         if (state.gmRoomId) {
           this.emitToGM(state.gmRoomId, 'gm:nightAction', {
             step: role,
             action: 'start',
-            message: `Xin mời ${GameEngine.getRoleDisplayName(role)} thức dậy.`,
-            players: rolePlayers.map((p) => ({
-              id: p.id,
-              username: p.username,
-            })),
+            message: `Mời ${GameEngine.getRoleDisplayName(role)} thức dậy.`,
+            players: isRoleActive
+              ? aliveRolePlayers.map((p) => ({
+                  id: p.id,
+                  username: p.username,
+                }))
+              : [],
             timestamp: Date.now(),
           });
         }
 
-        const response = await this.processRoleAction(roomId, role);
+        let response: Array<{
+          playerId: string;
+          payload: RoleResponse;
+        }> | null = null;
 
+        if (isRoleActive) {
+          // Real role action: emit to alive players and wait for response
+          response = await this.processRoleAction(roomId, role);
+        } else {
+          // Dead or absent role: simulate a fake delay (no events to players)
+          await this.simulateDeadRoleAction();
+        }
+
+        // GM always sees role complete (reads "go back to sleep")
         if (state.gmRoomId) {
           this.emitToGM(state.gmRoomId, 'gm:nightAction', {
             step: role,
             action: 'complete',
             message: `${GameEngine.getRoleDisplayName(role)} đã hoàn thành. Vui lòng nhắm mắt lại.`,
-            response,
+            response: isRoleActive ? response : null,
             timestamp: Date.now(),
           });
         }
@@ -689,9 +784,24 @@ export class PhaseManager {
     if (winner) {
       state.phase = 'ended';
       this.syncPlayerStatus(roomId);
+
+      // --- CAPTURE GAME END LOG ---
+      state.gameLog.push({
+        type: 'game_end',
+        round: state.round,
+        winner,
+        totalRounds: state.round,
+        players: state.players.map((p) => ({
+          username: p.username,
+          role: p.role ?? 'unknown',
+          alive: p.alive ?? false,
+        })),
+      });
+
       this.emitToAllPlayers(roomId, 'game:gameEnded', {
         winner,
         players: state.players,
+        gameLog: state.gameLog,
       });
 
       if (state.gmRoomId) {
@@ -763,6 +873,15 @@ export class PhaseManager {
     this.syncPlayerStatus(roomId);
 
     const target = state.players.find((p) => p.id === targetId);
+
+    // --- CAPTURE HUNTER SHOT LOG ---
+    state.gameLog.push({
+      type: 'hunter_shot',
+      round: state.round,
+      hunter: state.players.find((p) => p.role === 'hunter' && !p.alive)?.username ?? 'Thợ săn',
+      target: target?.username ?? null,
+    });
+
     this.emitToAllPlayers(roomId, 'game:hunterShot', {
       hunterId: state.players.find((p) => p.role === 'hunter' && !p.alive)?.id,
       targetId,
@@ -807,6 +926,14 @@ export class PhaseManager {
       this.handleHunterShoot(roomId, targetId);
     } else {
       // Hunter chose not to shoot
+      // --- CAPTURE HUNTER SKIP LOG ---
+      state.gameLog.push({
+        type: 'hunter_shot',
+        round: state.round,
+        hunter: deadHunter.username,
+        target: null,
+      });
+
       if (state.gmRoomId) {
         this.emitToGM(state.gmRoomId, 'gm:hunterAction', {
           type: 'hunterSkipped',
