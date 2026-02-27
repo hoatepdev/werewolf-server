@@ -8,6 +8,7 @@ import {
   RoleResponse,
   NightDeathResult,
   VotingResult,
+  TimerInfo,
 } from './game-engine';
 
 @Injectable()
@@ -30,7 +31,7 @@ export class PhaseManager {
     bodyguard: 30000,
     werewolf: 60000,
     witch: 30000,
-    seer: 3000,
+    seer: 30000,
   };
 
   constructor(private readonly roomService: RoomService) {}
@@ -86,6 +87,11 @@ export class PhaseManager {
     return GameEngine.canTransition(state, targetPhase);
   }
 
+  getTimerInfo(roomId: string): TimerInfo | undefined {
+    const state = this.gameStates.get(roomId);
+    return state?.timerInfo;
+  }
+
   // --- Emit helpers ---
 
   private emitToGM(gmRoomId: string, event: string, payload?: any): void {
@@ -131,11 +137,24 @@ export class PhaseManager {
       const responses: Array<{ playerId: string; payload: RoleResponse }> = [];
       const responded = new Set<string>();
       const timeoutMs = this.ROLE_TIMEOUTS[role] || 15000;
+      const deadline = Date.now() + timeoutMs;
+
+      // Store timer info in game state for reconnect recovery
+      state.timerInfo = {
+        context: role as TimerInfo['context'],
+        durationMs: timeoutMs,
+        deadline,
+      } as TimerInfo;
 
       // Cleanup function to prevent memory leaks
       const cleanup = () => {
         clearTimeout(timeoutHandle);
         this.pendingResponses.delete(roomId);
+        if (state) state.timerInfo = undefined;
+        // Emit timer stop to role players
+        rolePlayers.forEach((player) => {
+          this.server.to(player.id).emit('game:timerStop', {});
+        });
       };
 
       // Timeout: auto-resolve with defaults if players don't respond
@@ -179,8 +198,14 @@ export class PhaseManager {
         rolePlayers,
       });
 
+      // Emit both the action event and timer start to role players
       rolePlayers.forEach((player) => {
         this.server.to(player.id).emit(event, data);
+        this.server.to(player.id).emit('game:timerStart', {
+          context: role,
+          durationMs: timeoutMs,
+          deadline,
+        });
       });
     });
   }
@@ -393,6 +418,10 @@ export class PhaseManager {
     // Mark voting as resolved to prevent double-trigger
     state.votingResolved = true;
 
+    // Stop the timer
+    state.timerInfo = undefined;
+    this.emitToAllPlayers(roomId, 'game:timerStop', {});
+
     const result: VotingResult = GameEngine.resolveVoting(state);
     this.syncPlayerStatus(roomId);
 
@@ -581,6 +610,16 @@ export class PhaseManager {
       state.votingResolved = false;
       state.hunterShooting = false;
 
+      const votingDuration = 60000;
+      const deadline = Date.now() + votingDuration;
+
+      // Store timer info for reconnect recovery
+      state.timerInfo = {
+        context: 'voting',
+        durationMs: votingDuration,
+        deadline,
+      } as TimerInfo;
+
       if (state.phaseTimeout) clearTimeout(state.phaseTimeout);
       state.phaseTimeout = setTimeout(() => {
         try {
@@ -597,7 +636,7 @@ export class PhaseManager {
             error,
           );
         }
-      }, 60000);
+      }, votingDuration);
 
       if (state.gmRoomId) {
         this.emitToGM(state.gmRoomId, 'gm:votingAction', {
@@ -609,6 +648,13 @@ export class PhaseManager {
 
       this.emitToAllPlayers(roomId, 'game:phaseChanged', {
         phase: 'voting',
+      });
+
+      // Emit timer start to all players
+      this.emitToAllPlayers(roomId, 'game:timerStart', {
+        context: 'voting',
+        durationMs: votingDuration,
+        deadline,
       });
     } catch (error) {
       this.logger.error(

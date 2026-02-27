@@ -12,6 +12,7 @@ import { RoomService } from '../service/room.service';
 import { Player, Role } from '../types';
 import { Injectable, Logger } from '@nestjs/common';
 import { PhaseManager } from '../service/phase-manager.service';
+import { TimerInfo } from '../service/game-engine';
 import 'dotenv/config';
 
 @WebSocketGateway({
@@ -214,6 +215,15 @@ export class GameGateway implements OnGatewayInit, OnGatewayDisconnect {
       playerId: socket.id,
       roomCode: data.roomCode,
     });
+
+    // Sync timer state if a countdown is active
+    const timerInfo: TimerInfo | undefined = this.phaseManager.getTimerInfo(
+      data.roomCode,
+    );
+    if (timerInfo) {
+      socket.emit('game:timerSync', timerInfo);
+    }
+
     this.emitRoomPlayers(data.roomCode);
     this.logger.log(`Player ${player.username} rejoined room ${data.roomCode}`);
   }

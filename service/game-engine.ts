@@ -1,5 +1,11 @@
 import { Phase, Player } from '../types';
 
+export interface TimerInfo {
+  context: 'bodyguard' | 'werewolf' | 'witch' | 'seer' | 'voting';
+  durationMs: number;
+  deadline: number;
+}
+
 export interface GameState {
   phase: Phase | null;
   players: Player[];
@@ -22,6 +28,7 @@ export interface GameState {
   gmRoomId?: string;
   votingResolved?: boolean;
   hunterShooting?: boolean;
+  timerInfo?: TimerInfo;
 }
 
 export interface RoleResponse {
@@ -405,6 +412,7 @@ export class GameEngine {
       clearTimeout(state.phaseTimeout);
     }
     state.phaseTimeout = undefined;
+    state.timerInfo = undefined;
   }
 
   static resetNightState(state: GameState): void {
@@ -412,5 +420,6 @@ export class GameEngine {
     state.phaseTimeout = undefined;
     state.currentNightStep = undefined;
     state.werewolfVotes = {};
+    state.timerInfo = undefined;
   }
 }
