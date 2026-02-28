@@ -177,10 +177,12 @@ describe('PhaseManager Integration', () => {
       const state = phaseManager.getGameStateForTest(roomId)!;
       const hunter = state.players.find((p) => p.role === 'hunter')!;
 
-      // Kill the hunter
+      // Kill the hunter and set up hunter shooting state
       hunter.alive = false;
       state.phase = 'voting';
       state.votingResolved = true;
+      state.hunterShooting = true;
+      state.hunterDeathContext = 'vote';
 
       phaseManager.handleHunterDeathShoot(roomId, hunter.id, 'socket-p1');
 
@@ -195,6 +197,8 @@ describe('PhaseManager Integration', () => {
       hunter.alive = false;
       state.phase = 'voting';
       state.votingResolved = true;
+      state.hunterShooting = true;
+      state.hunterDeathContext = 'vote';
 
       phaseManager.handleHunterDeathShoot(roomId, hunter.id, undefined);
 

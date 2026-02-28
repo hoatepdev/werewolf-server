@@ -28,6 +28,7 @@ export interface GameState {
   gmRoomId?: string;
   votingResolved?: boolean;
   hunterShooting?: boolean;
+  hunterDeathContext?: 'night' | 'vote';
   timerInfo?: TimerInfo;
   gameLog: GameLogEntry[];
   round: number;

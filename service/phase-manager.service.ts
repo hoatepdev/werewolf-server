@@ -418,6 +418,69 @@ export class PhaseManager {
         cause: result.deaths.length > 0 ? result.deaths[0].cause : 'protected',
       });
 
+      // --- Check if hunter was killed at night → block phase transition ---
+      const deadHunter = result.deaths.find(
+        (d) => state.players.find((p) => p.id === d.playerId)?.role === 'hunter',
+      );
+
+      if (deadHunter) {
+        state.hunterShooting = true;
+        state.hunterDeathContext = 'night';
+
+        if (state.gmRoomId) {
+          this.emitToGM(state.gmRoomId, 'gm:hunterAction', {
+            type: 'hunterDied',
+            message: `Thợ săn đã chết trong đêm. Chờ thợ săn bắn hoặc bỏ qua.`,
+          });
+        }
+
+        // Capture log data before reset
+        const savedHunterBranch: string[] = [];
+        if (state.bodyguardTarget && state.bodyguardTarget === state.werewolfTarget) {
+          const name = this.resolveUsername(state, state.bodyguardTarget);
+          if (name) savedHunterBranch.push(name);
+        }
+        if (
+          state.witch.healTarget &&
+          state.witch.healTarget === state.werewolfTarget &&
+          state.bodyguardTarget !== state.werewolfTarget
+        ) {
+          const name = this.resolveUsername(state, state.witch.healTarget);
+          if (name) savedHunterBranch.push(name);
+        }
+        let seerResultHunterBranch: boolean | null = null;
+        if (state.seerTarget) {
+          seerResultHunterBranch = GameEngine.getSeerResult(state, state.seerTarget);
+        }
+
+        state.gameLog.push({
+          type: 'night_result',
+          round: state.round,
+          werewolfTarget: this.resolveUsername(state, state.werewolfTarget),
+          bodyguardTarget: this.resolveUsername(state, state.bodyguardTarget),
+          seerTarget: this.resolveUsername(state, state.seerTarget),
+          seerResult: seerResultHunterBranch,
+          witchHeal: !!state.witch.healTarget,
+          witchPoisonTarget: this.resolveUsername(state, state.witch.poisonTarget),
+          deaths: result.deaths.map((d) => ({
+            username:
+              state.players.find((p) => p.id === d.playerId)?.username ??
+              d.playerId,
+            cause: d.cause,
+          })),
+          saved: savedHunterBranch,
+        });
+
+        GameEngine.resetNightState(state);
+
+        // Emit hunter shoot event so hunter sees the shoot UI
+        this.emitToAllPlayers(roomId, 'game:hunterShoot', {
+          hunterId: deadHunter.playerId,
+        });
+
+        return; // Phase blocked — wait for hunter's response
+      }
+
       // --- CAPTURE NIGHT LOG (before reset) ---
       const saved: string[] = [];
       // Detect bodyguard save
@@ -575,6 +638,7 @@ export class PhaseManager {
     // Hunter voted out — wait for their shoot action
     if (result.cause === 'hunter') {
       state.hunterShooting = true;
+      state.hunterDeathContext = 'vote';
       this.emitToAllPlayers(roomId, 'votingResult', {
         eliminatedPlayerId: result.eliminatedPlayerId,
         cause: 'hunter',
@@ -912,8 +976,15 @@ export class PhaseManager {
 
     const winner = this.checkWinCondition(roomId);
     if (!winner) {
+      const context = state.hunterDeathContext;
+      state.hunterShooting = false;
+      state.hunterDeathContext = undefined;
       setTimeout(() => {
-        void this.startNightPhase(roomId);
+        if (context === 'night') {
+          void this.startDayPhase(roomId);
+        } else {
+          void this.startNightPhase(roomId);
+        }
       }, 3000);
     }
   }
@@ -925,6 +996,14 @@ export class PhaseManager {
   ): void {
     const state = this.gameStates.get(roomId);
     if (!state) return;
+
+    // Guard: only process while hunter shoot phase is active
+    if (!state.hunterShooting) {
+      this.logger.warn(
+        `Hunter shoot attempt rejected: hunterShooting is false (possible double-trigger)`,
+      );
+      return;
+    }
 
     // Validate that hunterId matches the actual dead hunter
     const deadHunter = state.players.find(
@@ -958,8 +1037,15 @@ export class PhaseManager {
 
       const winner = this.checkWinCondition(roomId);
       if (!winner) {
+        const context = state.hunterDeathContext;
+        state.hunterShooting = false;
+        state.hunterDeathContext = undefined;
         setTimeout(() => {
-          void this.startNightPhase(roomId);
+          if (context === 'night') {
+            void this.startDayPhase(roomId);
+          } else {
+            void this.startNightPhase(roomId);
+          }
         }, 3000);
       }
     }
