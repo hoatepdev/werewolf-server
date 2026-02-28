@@ -1,6 +1,6 @@
 import { PhaseManager } from '../../service/phase-manager.service';
 import { RoomService } from '../../service/room.service';
-import { GameEngine, GameState } from '../../service/game-engine';
+import { GameState } from '../../service/game-engine';
 import { createMockSocketServer } from '../helpers/mock-server';
 import { createStandardPlayers } from '../fixtures/players';
 
@@ -15,7 +15,7 @@ class TestablePhaseManager extends PhaseManager {
     super(roomService);
   }
 
-  getGameStateForTest(roomId: string) {
+  getGameStateForTest(roomId: string): GameState | undefined {
     return (this as any).gameStates.get(roomId);
   }
 }
@@ -112,38 +112,32 @@ describe('PhaseManager Integration', () => {
       expect(state?.votes).toEqual({});
     });
 
-    it.skip('should record votes and detect all-voted completion', () => {
-      // SKIPPED: This test requires investigation of the handleVoting automatic call.
-      // The test verifies that when all players vote, handleVoting is called automatically
-      // and votingResolved is set to true. Currently, this interaction is not working
-      // as expected and needs further debugging.
-      //
-      // TODO: Fix automatic handleVoting call when all players vote
-      // Tracking: https://github.com/anthropics/claude-code/issues/XXX
-
+    it('should record votes and trigger phase resolution when all players vote', () => {
       phaseManager.startVotingPhase(roomId);
 
       const state = phaseManager.getGameStateForTest(roomId)!;
 
-      // Set all players to alive so they can vote
+      // Ensure all players are alive
       state.players.forEach((p) => {
         p.alive = true;
       });
 
       const alivePlayers = state.players.filter((p) => p.alive);
-      const totalAlive = alivePlayers.length;
 
-      // Simulate all players voting
+      // Simulate all players voting for socket-p6 (a villager — not hunter/tanner)
+      // Vote for a player who is NOT socket-p6 themselves to avoid self-vote issues;
+      // pick socket-p7 as the target so socket-p6 can also vote
+      const target = 'socket-p7';
       alivePlayers.forEach((player) => {
-        phaseManager.handleVotingResponse(roomId, player.id, 'socket-p6');
+        phaseManager.handleVotingResponse(roomId, player.id, target);
       });
 
-      // Verify all votes were recorded
-      const votedCount = state.actionsReceived?.size ?? 0;
-      expect(votedCount).toBe(totalAlive);
+      // After all players vote, handleVoting resolves, resets voting state,
+      // and transitions to 'conclude' phase
+      expect(state.phase).toBe('conclude');
 
-      // After all players vote, handleVoting should be called automatically
-      expect(state.votingResolved).toBe(true);
+      // votes and actionsReceived are cleared by resetVotingState
+      expect(Object.keys(state.votes).length).toBe(0);
     });
   });
 

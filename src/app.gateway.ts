@@ -9,7 +9,9 @@ import 'dotenv/config';
 
 @WebSocketGateway({
   cors: {
-    origin: '*',
+    origin: process.env.ALLOWED_ORIGINS
+      ? process.env.ALLOWED_ORIGINS.split(',').map((o) => o.trim())
+      : '*',
     credentials: false,
   },
 })

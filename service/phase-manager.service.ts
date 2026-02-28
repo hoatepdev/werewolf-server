@@ -128,7 +128,10 @@ export class PhaseManager {
     }
   }
 
-  private resolveUsername(state: GameState, playerId: string | undefined): string | null {
+  private resolveUsername(
+    state: GameState,
+    playerId: string | undefined,
+  ): string | null {
     if (!playerId) return null;
     return state.players.find((p) => p.id === playerId)?.username ?? null;
   }
@@ -418,7 +421,10 @@ export class PhaseManager {
       // --- CAPTURE NIGHT LOG (before reset) ---
       const saved: string[] = [];
       // Detect bodyguard save
-      if (state.bodyguardTarget && state.bodyguardTarget === state.werewolfTarget) {
+      if (
+        state.bodyguardTarget &&
+        state.bodyguardTarget === state.werewolfTarget
+      ) {
         const name = this.resolveUsername(state, state.bodyguardTarget);
         if (name) saved.push(name);
       }
@@ -444,9 +450,14 @@ export class PhaseManager {
         seerTarget: this.resolveUsername(state, state.seerTarget),
         seerResult,
         witchHeal: !!state.witch.healTarget,
-        witchPoisonTarget: this.resolveUsername(state, state.witch.poisonTarget),
+        witchPoisonTarget: this.resolveUsername(
+          state,
+          state.witch.poisonTarget,
+        ),
         deaths: result.deaths.map((d) => ({
-          username: state.players.find((p) => p.id === d.playerId)?.username ?? d.playerId,
+          username:
+            state.players.find((p) => p.id === d.playerId)?.username ??
+            d.playerId,
           cause: d.cause,
         })),
         saved,
@@ -482,10 +493,12 @@ export class PhaseManager {
       round: state.round,
       votes: Object.entries(state.votes).map(([voterId, targetId]) => ({
         voter: state.players.find((p) => p.id === voterId)?.username ?? voterId,
-        target: state.players.find((p) => p.id === targetId)?.username ?? targetId,
+        target:
+          state.players.find((p) => p.id === targetId)?.username ?? targetId,
       })),
       eliminatedPlayer: result.eliminatedPlayerId
-        ? (state.players.find((p) => p.id === result.eliminatedPlayerId)?.username ?? null)
+        ? (state.players.find((p) => p.id === result.eliminatedPlayerId)
+            ?.username ?? null)
         : null,
       cause: result.cause,
       tiedPlayers: result.tiedPlayerIds?.map(
@@ -553,7 +566,7 @@ export class PhaseManager {
       const winner = this.checkWinCondition(roomId);
       if (!winner) {
         setTimeout(() => {
-          this.startNightPhase(roomId);
+          void this.startNightPhase(roomId);
         }, 3000);
       }
       return;
@@ -592,7 +605,7 @@ export class PhaseManager {
     const winner = this.checkWinCondition(roomId);
     if (!winner) {
       setTimeout(() => {
-        this.startNightPhase(roomId);
+        void this.startNightPhase(roomId);
       }, 3000);
     }
   }
@@ -878,7 +891,9 @@ export class PhaseManager {
     state.gameLog.push({
       type: 'hunter_shot',
       round: state.round,
-      hunter: state.players.find((p) => p.role === 'hunter' && !p.alive)?.username ?? 'Thợ săn',
+      hunter:
+        state.players.find((p) => p.role === 'hunter' && !p.alive)?.username ??
+        'Thợ săn',
       target: target?.username ?? null,
     });
 
@@ -898,7 +913,7 @@ export class PhaseManager {
     const winner = this.checkWinCondition(roomId);
     if (!winner) {
       setTimeout(() => {
-        this.startNightPhase(roomId);
+        void this.startNightPhase(roomId);
       }, 3000);
     }
   }
@@ -944,7 +959,7 @@ export class PhaseManager {
       const winner = this.checkWinCondition(roomId);
       if (!winner) {
         setTimeout(() => {
-          this.startNightPhase(roomId);
+          void this.startNightPhase(roomId);
         }, 3000);
       }
     }

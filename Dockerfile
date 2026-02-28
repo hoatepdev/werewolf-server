@@ -12,8 +12,8 @@ WORKDIR /app
 COPY --from=builder /app/package.json ./
 COPY --from=builder /app/yarn.lock ./
 COPY --from=builder /app/dist ./dist
-COPY --from=builder /app/node_modules ./node_modules
+RUN yarn install --frozen-lockfile --production && yarn cache clean
 RUN addgroup -g 1001 -S appgroup && adduser -S appuser -u 1001 -G appgroup
 USER appuser
 EXPOSE 4001
-CMD ["node", "dist/src/main.js"] 
+CMD ["node", "dist/src/main.js"]
