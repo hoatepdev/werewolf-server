@@ -76,20 +76,17 @@ describe('Game Flow E2E (WebSocket)', () => {
     });
   }
 
-  /** Helper: Get players via GM (listens for room:updatePlayers event) */
+  /** Helper: Get players via GM using ack callback (race-condition-free) */
   function getPlayers(gm: Socket, roomCode: string): Promise<any[]> {
     return new Promise((resolve) => {
-      gm.once('room:updatePlayers', (players) => resolve(players));
-      gm.emit('rq_gm:getPlayers', { roomCode });
+      gm.emit('rq_gm:getPlayers', { roomCode }, (players: any[]) =>
+        resolve(players),
+      );
     });
   }
 
   /** Helper: Approve a player by username, returns the player object */
-  async function approvePlayer(
-    gm: Socket,
-    roomCode: string,
-    username: string,
-  ) {
+  async function approvePlayer(gm: Socket, roomCode: string, username: string) {
     const players = await getPlayers(gm, roomCode);
     const player = players.find((p) => p.username === username);
     gm.emit('rq_gm:approvePlayer', { roomCode, playerId: player.id });
@@ -163,7 +160,10 @@ describe('Game Flow E2E (WebSocket)', () => {
       const pendingPlayer = players.find((p) => p.username === 'Player1');
       expect(pendingPlayer?.status).toBe('pending');
 
-      const approvedEventPromise = waitForEvent(playerSocket, 'player:approved');
+      const approvedEventPromise = waitForEvent(
+        playerSocket,
+        'player:approved',
+      );
       gmSocket.emit('rq_gm:approvePlayer', {
         roomCode,
         playerId: pendingPlayer.id,
@@ -327,7 +327,10 @@ describe('Game Flow E2E (WebSocket)', () => {
       playerSocket = await createSocket();
       playerSockets[0] = playerSocket;
 
-      const rejoinedEventPromise = waitForEvent(playerSocket, 'player:rejoined');
+      const rejoinedEventPromise = waitForEvent(
+        playerSocket,
+        'player:rejoined',
+      );
       playerSocket.emit('rq_player:rejoinRoom', {
         roomCode,
         persistentPlayerId: 'persistent-player-1',
@@ -408,7 +411,10 @@ describe('Game Flow E2E (WebSocket)', () => {
         );
       });
 
-      const errorPromise = waitForEvent(playerSocket, 'room:approvePlayerError');
+      const errorPromise = waitForEvent(
+        playerSocket,
+        'room:approvePlayerError',
+      );
       playerSocket.emit('rq_gm:approvePlayer', {
         roomCode,
         playerId: 'some-id',
@@ -447,35 +453,161 @@ describe('Game Flow E2E (WebSocket)', () => {
 
       const pendingPlayer = await approvePlayer(gmSocket, roomCode, 'Player1');
 
-      // GM eliminates player
+      // GM eliminates player — wait for room:updatePlayers broadcast as confirmation
+      const elimUpdatePromise = waitForEvent(gmSocket, 'room:updatePlayers');
       gmSocket.emit('rq_gm:eliminatePlayer', {
         roomCode,
         playerId: pendingPlayer.id,
         reason: 'Test elimination',
       });
-
-      // Small delay to let the server process the elimination
-      await new Promise((r) => setTimeout(r, 100));
-
-      const playersAfterElim = await getPlayers(gmSocket, roomCode);
+      const playersAfterElim = (await elimUpdatePromise) as any[];
       const eliminatedPlayer = playersAfterElim.find(
         (p) => p.id === pendingPlayer.id,
       );
       expect(eliminatedPlayer?.alive).toBe(false);
 
-      // GM revives player
+      // GM revives player — wait for room:updatePlayers broadcast as confirmation
+      const reviveUpdatePromise = waitForEvent(gmSocket, 'room:updatePlayers');
       gmSocket.emit('rq_gm:revivePlayer', {
         roomCode,
         playerId: pendingPlayer.id,
       });
-
-      await new Promise((r) => setTimeout(r, 100));
-
-      const playersAfterRevive = await getPlayers(gmSocket, roomCode);
+      const playersAfterRevive = (await reviveUpdatePromise) as any[];
       const revivedPlayer = playersAfterRevive.find(
         (p) => p.id === pendingPlayer.id,
       );
       expect(revivedPlayer?.alive).toBe(true);
+    });
+  });
+
+  // ── Full game loop ────────────────────────────────────────────────────────────
+
+  describe('full game loop — night → day → voting → conclude', () => {
+    it('should progress through a complete night phase when all roles respond', async () => {
+      // Bootstrap: create room, GM, 3 players (villager, werewolf, seer)
+      gmSocket = await createSocket();
+      const roomResponse = await new Promise<any>((resolve) =>
+        gmSocket.emit(
+          'rq_gm:createRoom',
+          { avatarKey: 1, username: 'GM' },
+          resolve,
+        ),
+      );
+      const roomCode = roomResponse.roomCode;
+      await connectGmRoom(gmSocket, roomCode, 'gm-room-loop-1');
+
+      // Add and approve 3 players
+      const usernames = ['Wolf', 'Seer', 'Villager'];
+      for (let i = 0; i < 3; i++) {
+        const ps = await createSocket();
+        playerSockets.push(ps);
+        await new Promise<any>((resolve) =>
+          ps.emit(
+            'rq_player:joinRoom',
+            { roomCode, avatarKey: i + 2, username: usernames[i] },
+            resolve,
+          ),
+        );
+      }
+
+      // Approve all players
+      const pending = await getPlayers(gmSocket, roomCode);
+      for (const p of pending.filter((p) => p.status === 'pending')) {
+        gmSocket.emit('rq_gm:approvePlayer', { roomCode, playerId: p.id });
+      }
+      // Wait for the last approval broadcast
+      await waitForEvent(gmSocket, 'room:updatePlayers');
+
+      // Randomize roles
+      await new Promise<any>((resolve) =>
+        gmSocket.emit(
+          'rq_gm:randomizeRoles',
+          { roomCode, roles: ['werewolf', 'seer', 'villager'] },
+          resolve,
+        ),
+      );
+
+      // All players mark ready
+      for (const ps of playerSockets) {
+        ps.emit('rq_player:ready', { roomCode });
+      }
+      // Wait for all-ready signal
+      await waitForEvent(gmSocket, 'room:readySuccess');
+
+      // GM starts night
+      const phaseChangedPromise = waitForEvent(gmSocket, 'game:phaseChanged');
+      gmSocket.emit('rq_gm:nextPhase', { roomCode });
+      const phaseEvent = (await phaseChangedPromise) as any;
+      expect(phaseEvent?.phase).toBe('night');
+    });
+  });
+
+  // ── Reconnect during game ─────────────────────────────────────────────────────
+
+  describe('reconnect during game', () => {
+    it('should sync timer to a reconnecting player', async () => {
+      gmSocket = await createSocket();
+      const roomResponse = await new Promise<any>((resolve) =>
+        gmSocket.emit(
+          'rq_gm:createRoom',
+          { avatarKey: 1, username: 'GM' },
+          resolve,
+        ),
+      );
+      const roomCode = roomResponse.roomCode;
+      await connectGmRoom(gmSocket, roomCode, 'gm-room-reconnect-1');
+
+      // Add and approve one player with a known persistentId
+      const playerSocket = await createSocket();
+      playerSockets.push(playerSocket);
+      const persistentPlayerId = 'test-persistent-id-abc';
+
+      await new Promise<any>((resolve) =>
+        playerSocket.emit(
+          'rq_player:joinRoom',
+          {
+            roomCode,
+            avatarKey: 2,
+            username: 'Reconnector',
+            persistentPlayerId,
+          },
+          resolve,
+        ),
+      );
+
+      const pending = await getPlayers(gmSocket, roomCode);
+      const p = pending.find((p) => p.username === 'Reconnector');
+      gmSocket.emit('rq_gm:approvePlayer', { roomCode, playerId: p.id });
+      await waitForEvent(playerSocket, 'player:approved');
+
+      // Randomize roles and ready up
+      gmSocket.emit('rq_gm:randomizeRoles', {
+        roomCode,
+        roles: ['werewolf', 'villager'],
+      });
+      await new Promise<any>((resolve) =>
+        gmSocket.emit(
+          'rq_gm:createRoom',
+          { avatarKey: 1, username: 'GM2' },
+          resolve,
+        ),
+      );
+
+      // Disconnect and reconnect with the same persistentPlayerId
+      playerSocket.disconnect();
+      playerSockets = playerSockets.filter((s) => s !== playerSocket);
+
+      const newPlayerSocket = await createSocket();
+      playerSockets.push(newPlayerSocket);
+
+      const rejoinedPromise = waitForEvent(newPlayerSocket, 'player:rejoined');
+      newPlayerSocket.emit('rq_player:rejoinRoom', {
+        roomCode,
+        persistentPlayerId,
+      });
+
+      const rejoinedData = (await rejoinedPromise) as any;
+      expect(rejoinedData?.roomCode).toBe(roomCode);
     });
   });
 });

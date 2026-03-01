@@ -1,6 +1,6 @@
 import { PhaseManager } from '../../service/phase-manager.service';
 import { RoomService } from '../../service/room.service';
-import { GameState } from '../../service/game-engine';
+import { GameState, RoleResponse } from '../../service/game-engine';
 import { createMockSocketServer } from '../helpers/mock-server';
 import { createStandardPlayers } from '../fixtures/players';
 
@@ -11,12 +11,19 @@ import { createStandardPlayers } from '../fixtures/players';
  * we subclass and expose a getter for testing purposes.
  */
 class TestablePhaseManager extends PhaseManager {
-  constructor(roomService: RoomService) {
-    super(roomService);
+  constructor(
+    roomService: RoomService,
+    delayFn?: (ms: number) => Promise<void>,
+  ) {
+    super(roomService, delayFn);
   }
 
   getGameStateForTest(roomId: string): GameState | undefined {
     return (this as any).gameStates.get(roomId);
+  }
+
+  hasPendingResponse(roomId: string): boolean {
+    return (this as any).pendingResponses.has(roomId);
   }
 }
 
@@ -61,6 +68,7 @@ describe('PhaseManager Integration', () => {
   });
 
   afterEach(() => {
+    phaseManager.cleanupRoom(roomId);
     roomService.onModuleDestroy();
   });
 
@@ -277,5 +285,169 @@ describe('PhaseManager Integration', () => {
         phaseManager.startVotingPhase('nonexistent-room');
       }).not.toThrow();
     });
+  });
+});
+
+// ── Night phase — full cycle with zero-delay ──────────────────────────────────
+
+describe('PhaseManager — full night cycle (zero-delay)', () => {
+  let phaseManager: TestablePhaseManager;
+  let roomService: RoomService;
+  let mockServer: ReturnType<typeof createMockSocketServer>;
+  let roomId: string;
+
+  const zeroDelay = () => Promise.resolve();
+
+  beforeEach(() => {
+    roomService = new RoomService();
+    clearInterval((roomService as any).cleanupTimer);
+
+    phaseManager = new TestablePhaseManager(roomService, zeroDelay);
+    mockServer = createMockSocketServer();
+    phaseManager.setServer(mockServer.server as any);
+
+    const room = roomService.createRoom('gm-socket', 1, 'GameMaster');
+    roomId = room.roomCode;
+
+    const players = createStandardPlayers();
+    players.forEach((p) => {
+      if (p.status === 'approved') {
+        roomService.addPlayer(roomId, {
+          ...p,
+          id: `socket-${p.id}`,
+          persistentId: p.persistentId,
+        });
+        roomService.approvePlayer(roomId, `socket-${p.id}`);
+      }
+    });
+
+    const approvedPlayers = roomService
+      .getPlayers(roomId)
+      .filter((p) => p.status === 'approved');
+    phaseManager.initGameState(roomId, approvedPlayers, 'gm-room-123');
+
+    mockServer.reset();
+  });
+
+  afterEach(() => {
+    phaseManager.cleanupRoom(roomId);
+    roomService.onModuleDestroy();
+  });
+
+  /** Helper: Poll until pendingResponses is registered, then submit responses */
+  async function submitWhenReady(
+    roleId: string,
+    payload: RoleResponse,
+    werewolfPartnerId?: string,
+    werewolfTarget?: string,
+  ): Promise<void> {
+    for (let i = 0; i < 100; i++) {
+      if (phaseManager.hasPendingResponse(roomId)) {
+        phaseManager.handleRoleResponse(roomId, roleId, payload);
+        if (werewolfPartnerId && werewolfTarget) {
+          phaseManager.handleRoleResponse(roomId, werewolfPartnerId, {
+            targetId: werewolfTarget,
+          });
+        }
+        return;
+      }
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+    throw new Error('pendingResponses never registered');
+  }
+
+  it('should complete a full night phase when all roles submit responses', async () => {
+    const nightPromise = phaseManager.startNightPhase(roomId);
+
+    // Bodyguard: protect socket-p6
+    await submitWhenReady('socket-p5', { targetId: 'socket-p6' });
+
+    // Werewolves: both target socket-p6
+    await submitWhenReady(
+      'socket-p1',
+      { targetId: 'socket-p6' },
+      'socket-p2',
+      'socket-p6',
+    );
+
+    // Witch: skip
+    await submitWhenReady('socket-p4', { heal: false });
+
+    // Seer: check socket-p1
+    await submitWhenReady('socket-p3', { targetId: 'socket-p1' });
+
+    await nightPromise;
+
+    const state = phaseManager.getGameStateForTest(roomId)!;
+    // socket-p6 was targeted but bodyguard protected — should still be alive
+    const p6 = state.players.find((p) => p.id === 'socket-p6');
+    expect(p6?.alive).toBe(true);
+    // A night_result log entry should have been recorded
+    expect(state.gameLog.some((e) => e.type === 'night_result')).toBe(true);
+  });
+
+  it('should kill a player when werewolf target is unprotected', async () => {
+    const nightPromise = phaseManager.startNightPhase(roomId);
+
+    // Bodyguard: protect someone else (socket-p7)
+    await submitWhenReady('socket-p5', { targetId: 'socket-p7' });
+
+    // Werewolves: both target socket-p6 (unprotected)
+    await submitWhenReady(
+      'socket-p1',
+      { targetId: 'socket-p6' },
+      'socket-p2',
+      'socket-p6',
+    );
+
+    // Witch: skip
+    await submitWhenReady('socket-p4', { heal: false });
+
+    // Seer: skip
+    await submitWhenReady('socket-p3', {});
+
+    await nightPromise;
+
+    const state = phaseManager.getGameStateForTest(roomId)!;
+    const p6 = state.players.find((p) => p.id === 'socket-p6');
+    expect(p6?.alive).toBe(false);
+  });
+
+  it('should advance round counter after each night phase', async () => {
+    const stateBefore = phaseManager.getGameStateForTest(roomId)!;
+    expect(stateBefore.round).toBe(0);
+
+    const nightPromise = phaseManager.startNightPhase(roomId);
+    await submitWhenReady('socket-p5', { targetId: 'socket-p7' });
+    await submitWhenReady(
+      'socket-p1',
+      { targetId: 'socket-p6' },
+      'socket-p2',
+      'socket-p6',
+    );
+    await submitWhenReady('socket-p4', { heal: false });
+    await submitWhenReady('socket-p3', {});
+
+    await nightPromise;
+
+    expect(phaseManager.getGameStateForTest(roomId)?.round).toBe(1);
+  });
+
+  it('should emit game:phaseChanged(night) and game:nightResult events', async () => {
+    const nightPromise = phaseManager.startNightPhase(roomId);
+    await submitWhenReady('socket-p5', { targetId: 'socket-p7' });
+    await submitWhenReady(
+      'socket-p1',
+      { targetId: 'socket-p6' },
+      'socket-p2',
+      'socket-p6',
+    );
+    await submitWhenReady('socket-p4', { heal: false });
+    await submitWhenReady('socket-p3', {});
+
+    await nightPromise;
+
+    mockServer.expectEmitted('game:phaseChanged');
+    mockServer.expectEmitted('game:nightResult');
   });
 });

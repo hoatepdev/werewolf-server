@@ -294,8 +294,10 @@ export class GameGateway implements OnGatewayInit, OnGatewayDisconnect {
       return;
     }
     const players = this.roomService.getPlayers(data.roomCode);
-
+    // Emit directly to the requesting socket so UI stays in sync,
+    // and also return as ack payload for deterministic test helpers.
     socket.emit('room:updatePlayers', players);
+    return players;
   }
 
   @SubscribeMessage('rq_gm:eliminatePlayer')

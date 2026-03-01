@@ -27,21 +27,23 @@ export class PhaseManager {
   >();
   private transitionLocks = new Set<string>();
 
-  private readonly ROLE_TIMEOUTS: Record<string, number> = {
-    bodyguard: 30000,
-    werewolf: 60000,
-    witch: 30000,
-    seer: 30000,
-  };
+  private readonly ROLE_TIMEOUTS: Record<string, number> =
+    process.env.NODE_ENV === 'test'
+      ? { bodyguard: 100, werewolf: 100, witch: 100, seer: 100 }
+      : { bodyguard: 30000, werewolf: 60000, witch: 30000, seer: 30000 };
 
-  constructor(private readonly roomService: RoomService) {}
+  constructor(
+    private readonly roomService: RoomService,
+    private readonly delayFn: (ms: number) => Promise<void> = (ms) =>
+      new Promise((resolve) => setTimeout(resolve, ms)),
+  ) {}
 
   setServer(server: Server) {
     this.server = server;
   }
 
   private delay(ms: number) {
-    return new Promise((resolve) => setTimeout(resolve, ms));
+    return this.delayFn(ms);
   }
 
   /**
@@ -420,7 +422,8 @@ export class PhaseManager {
 
       // --- Check if hunter was killed at night → block phase transition ---
       const deadHunter = result.deaths.find(
-        (d) => state.players.find((p) => p.id === d.playerId)?.role === 'hunter',
+        (d) =>
+          state.players.find((p) => p.id === d.playerId)?.role === 'hunter',
       );
 
       if (deadHunter) {
@@ -436,7 +439,10 @@ export class PhaseManager {
 
         // Capture log data before reset
         const savedHunterBranch: string[] = [];
-        if (state.bodyguardTarget && state.bodyguardTarget === state.werewolfTarget) {
+        if (
+          state.bodyguardTarget &&
+          state.bodyguardTarget === state.werewolfTarget
+        ) {
           const name = this.resolveUsername(state, state.bodyguardTarget);
           if (name) savedHunterBranch.push(name);
         }
@@ -450,7 +456,10 @@ export class PhaseManager {
         }
         let seerResultHunterBranch: boolean | null = null;
         if (state.seerTarget) {
-          seerResultHunterBranch = GameEngine.getSeerResult(state, state.seerTarget);
+          seerResultHunterBranch = GameEngine.getSeerResult(
+            state,
+            state.seerTarget,
+          );
         }
 
         state.gameLog.push({
@@ -461,7 +470,10 @@ export class PhaseManager {
           seerTarget: this.resolveUsername(state, state.seerTarget),
           seerResult: seerResultHunterBranch,
           witchHeal: !!state.witch.healTarget,
-          witchPoisonTarget: this.resolveUsername(state, state.witch.poisonTarget),
+          witchPoisonTarget: this.resolveUsername(
+            state,
+            state.witch.poisonTarget,
+          ),
           deaths: result.deaths.map((d) => ({
             username:
               state.players.find((p) => p.id === d.playerId)?.username ??
@@ -528,9 +540,10 @@ export class PhaseManager {
 
       GameEngine.resetNightState(state);
 
-      setTimeout(() => {
+      // Use injectable delayFn for testability
+      void this.delayFn(3000).then(() => {
         this.startDayPhase(roomId);
-      }, 3000);
+      });
     }
   }
 
@@ -628,9 +641,9 @@ export class PhaseManager {
 
       const winner = this.checkWinCondition(roomId);
       if (!winner) {
-        setTimeout(() => {
-          void this.startNightPhase(roomId);
-        }, 3000);
+        void this.delayFn(3000).then(() => {
+          this.startNightPhase(roomId);
+        });
       }
       return;
     }
@@ -668,9 +681,9 @@ export class PhaseManager {
 
     const winner = this.checkWinCondition(roomId);
     if (!winner) {
-      setTimeout(() => {
-        void this.startNightPhase(roomId);
-      }, 3000);
+      void this.delayFn(3000).then(() => {
+        this.startNightPhase(roomId);
+      });
     }
   }
 
@@ -782,7 +795,7 @@ export class PhaseManager {
       state.votingResolved = false;
       state.hunterShooting = false;
 
-      const votingDuration = 60000;
+      const votingDuration = process.env.NODE_ENV === 'test' ? 1000 : 60000;
       const deadline = Date.now() + votingDuration;
 
       // Store timer info for reconnect recovery
@@ -1040,13 +1053,18 @@ export class PhaseManager {
         const context = state.hunterDeathContext;
         state.hunterShooting = false;
         state.hunterDeathContext = undefined;
-        setTimeout(() => {
-          if (context === 'night') {
-            void this.startDayPhase(roomId);
-          } else {
-            void this.startNightPhase(roomId);
-          }
-        }, 3000);
+        void this.delayFn(3000).then(
+          () => {
+            if (context === 'night') {
+              void this.startDayPhase(roomId);
+            } else {
+              void this.startNightPhase(roomId);
+            }
+          },
+          () => {
+            // Ignore errors from phase transition (will be logged elsewhere)
+          },
+        );
       }
     }
   }

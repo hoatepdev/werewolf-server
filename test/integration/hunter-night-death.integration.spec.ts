@@ -187,8 +187,7 @@ describe('Hunter Night-Death Feature', () => {
       resolveWithWolvesKillingHunter();
 
       const gmEmit = mockServer.emits.find(
-        (e) =>
-          e.room === 'gm-room-123' && e.event === 'gm:hunterAction',
+        (e) => e.room === 'gm-room-123' && e.event === 'gm:hunterAction',
       );
       const payload = gmEmit?.payload as Record<string, unknown>;
       expect(typeof payload?.message).toBe('string');
@@ -211,8 +210,13 @@ describe('Hunter Night-Death Feature', () => {
       resolveWithWolvesKillingHunter();
 
       const state = phaseManager.getGameStateForTest(roomId)!;
-      const nightLog = state.gameLog.find((e) => e.type === 'night_result') as any;
-      const deaths = nightLog?.deaths as Array<{ username: string; cause: string }>;
+      const nightLog = state.gameLog.find(
+        (e) => e.type === 'night_result',
+      ) as any;
+      const deaths = nightLog?.deaths as Array<{
+        username: string;
+        cause: string;
+      }>;
       expect(deaths).toBeDefined();
       expect(deaths.some((d) => d.username === 'Hunter')).toBe(true);
     });
@@ -221,7 +225,9 @@ describe('Hunter Night-Death Feature', () => {
       resolveWithWolvesKillingHunter();
 
       const state = phaseManager.getGameStateForTest(roomId)!;
-      const nightLog = state.gameLog.find((e) => e.type === 'night_result') as any;
+      const nightLog = state.gameLog.find(
+        (e) => e.type === 'night_result',
+      ) as any;
       // werewolfTarget should be the hunter's username, not null
       expect(nightLog?.werewolfTarget).toBe('Hunter');
     });
@@ -230,7 +236,10 @@ describe('Hunter Night-Death Feature', () => {
       const state = phaseManager.getGameStateForTest(roomId)!;
       state.phase = 'night';
       state.werewolfTarget = 'socket-p8';
-      state.werewolfVotes = { 'socket-p1': 'socket-p8', 'socket-p2': 'socket-p8' };
+      state.werewolfVotes = {
+        'socket-p1': 'socket-p8',
+        'socket-p2': 'socket-p8',
+      };
 
       phaseManager.resolveNightActionsForTest(roomId);
 
@@ -330,7 +339,9 @@ describe('Hunter Night-Death Feature', () => {
       phaseManager.handleHunterDeathShoot(roomId, 'socket-p8', 'socket-p1');
 
       const state = phaseManager.getGameStateForTest(roomId)!;
-      const shotLog = state.gameLog.find((e) => e.type === 'hunter_shot') as any;
+      const shotLog = state.gameLog.find(
+        (e) => e.type === 'hunter_shot',
+      ) as any;
       expect(shotLog).toBeDefined();
       expect(shotLog.hunter).toBe('Hunter');
       expect(shotLog.target).toBe('Wolf1');
@@ -342,7 +353,9 @@ describe('Hunter Night-Death Feature', () => {
       phaseManager.handleHunterDeathShoot(roomId, 'socket-p8', undefined);
 
       const state = phaseManager.getGameStateForTest(roomId)!;
-      const shotLog = state.gameLog.find((e) => e.type === 'hunter_shot') as any;
+      const shotLog = state.gameLog.find(
+        (e) => e.type === 'hunter_shot',
+      ) as any;
       expect(shotLog).toBeDefined();
       expect(shotLog.target).toBeNull();
     });
