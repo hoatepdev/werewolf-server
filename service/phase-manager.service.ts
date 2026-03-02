@@ -32,11 +32,10 @@ export class PhaseManager {
       ? { bodyguard: 100, werewolf: 100, witch: 100, seer: 100 }
       : { bodyguard: 30000, werewolf: 60000, witch: 30000, seer: 30000 };
 
-  constructor(
-    private readonly roomService: RoomService,
-    private readonly delayFn: (ms: number) => Promise<void> = (ms) =>
-      new Promise((resolve) => setTimeout(resolve, ms)),
-  ) {}
+  protected delayFn: (ms: number) => Promise<void> = (ms) =>
+    new Promise((resolve) => setTimeout(resolve, ms));
+
+  constructor(private readonly roomService: RoomService) {}
 
   setServer(server: Server) {
     this.server = server;

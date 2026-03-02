@@ -15,7 +15,8 @@ class TestablePhaseManager extends PhaseManager {
     roomService: RoomService,
     delayFn?: (ms: number) => Promise<void>,
   ) {
-    super(roomService, delayFn);
+    super(roomService);
+    if (delayFn) this.delayFn = delayFn;
   }
 
   getGameStateForTest(roomId: string): GameState | undefined {
