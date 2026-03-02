@@ -175,7 +175,6 @@ masoi-server/
 ├── src/
 │   ├── app.module.ts          # NestJS module (all providers)
 │   ├── main.ts                # Entry point
-│   ├── app.gateway.ts         # Basic WebSocket gateway
 │   └── *.spec.ts              # Unit tests
 ├── gateway/
 │   └── game.gateway.ts        # Main WebSocket gateway (all game events)

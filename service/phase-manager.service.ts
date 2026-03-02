@@ -776,7 +776,7 @@ export class PhaseManager {
     if (state.gmRoomId) {
       this.emitToGM(state.gmRoomId, 'gm:votingAction', {
         type: 'phaseChanged',
-        message: 'Mời các bạn bàn luận',
+        message: 'Mời cả làng bàn luận',
       });
     }
   }

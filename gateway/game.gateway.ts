@@ -16,6 +16,7 @@ import { TimerInfo } from '../service/game-engine';
 import 'dotenv/config';
 
 @WebSocketGateway({
+  transports: ['websocket'],
   cors: {
     origin: process.env.ALLOWED_ORIGINS
       ? process.env.ALLOWED_ORIGINS.split(',').map((o) => o.trim())
