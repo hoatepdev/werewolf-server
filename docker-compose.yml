@@ -6,19 +6,19 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: masoi-app
+    container_name: werewolf-app
     restart: unless-stopped
     env_file:
       - .env
     environment:
       - NODE_ENV=production
       - ALLOWED_ORIGINS=${ALLOWED_ORIGINS}
-      - PORT=${PORT:-4001}
+      - PORT=4000
     ports:
-      - '${PORT:-4001}:${PORT:-4001}'
+      - '4002:4000'
     networks:
-      - masoi-net
+      - werewolf-net
 
 networks:
-  masoi-net:
+  werewolf-net:
     driver: bridge

@@ -69,13 +69,13 @@ Pure static utility class — no NestJS dependencies, fully unit-testable.
 
 ### Role Timeouts (Production)
 
-| Role | Timeout |
-|------|---------|
-| Bodyguard | 30s |
-| Werewolf | 60s |
-| Witch | 30s |
-| Seer | 30s |
-| Voting | 60s |
+| Role      | Timeout |
+| --------- | ------- |
+| Bodyguard | 30s     |
+| Werewolf  | 60s     |
+| Witch     | 30s     |
+| Seer      | 30s     |
+| Voting    | 60s     |
 
 In test environment all timeouts are reduced to 100ms (voting: 1000ms).
 
@@ -83,66 +83,66 @@ In test environment all timeouts are reduced to 100ms (voting: 1000ms).
 
 #### GM Events
 
-| Event | Description |
-|-------|-------------|
-| `rq_gm:createRoom` | Create new game room |
-| `rq_gm:connectGmRoom` | GM joins private GM room for notifications |
-| `rq_gm:approvePlayer` | Approve waiting player |
-| `rq_gm:rejectPlayer` | Reject waiting player |
-| `rq_gm:getPlayers` | Fetch current player list |
-| `rq_gm:randomizeRole` | Randomize and assign roles |
-| `rq_gm:startGame` | Start the game (after ready check) |
-| `rq_gm:resetRoom` | Reset room to lobby state |
-| `rq_gm:concludePhase` | Conclude current phase (manual override) |
-| `rq_gm:eliminatePlayer` | GM manually eliminates a player |
-| `rq_gm:revivePlayer` | GM manually revives a player |
+| Event                   | Description                                |
+| ----------------------- | ------------------------------------------ |
+| `rq_gm:createRoom`      | Create new game room                       |
+| `rq_gm:connectGmRoom`   | GM joins private GM room for notifications |
+| `rq_gm:approvePlayer`   | Approve waiting player                     |
+| `rq_gm:rejectPlayer`    | Reject waiting player                      |
+| `rq_gm:getPlayers`      | Fetch current player list                  |
+| `rq_gm:randomizeRole`   | Randomize and assign roles                 |
+| `rq_gm:startGame`       | Start the game (after ready check)         |
+| `rq_gm:resetRoom`       | Reset room to lobby state                  |
+| `rq_gm:concludePhase`   | Conclude current phase (manual override)   |
+| `rq_gm:eliminatePlayer` | GM manually eliminates a player            |
+| `rq_gm:revivePlayer`    | GM manually revives a player               |
 
 #### Player Events
 
-| Event | Description |
-|-------|-------------|
-| `rq_player:joinRoom` | Player joins by room code |
+| Event                  | Description                          |
+| ---------------------- | ------------------------------------ |
+| `rq_player:joinRoom`   | Player joins by room code            |
 | `rq_player:rejoinRoom` | Reconnect using `persistentPlayerId` |
-| `rq_player:leaveRoom` | Player leaves room |
-| `rq_player:ready` | Toggle ready status |
-| `rq_player:updateInfo` | Update name/avatar |
-| `game:vote` | Cast vote during voting phase |
+| `rq_player:leaveRoom`  | Player leaves room                   |
+| `rq_player:ready`      | Toggle ready status                  |
+| `rq_player:updateInfo` | Update name/avatar                   |
+| `game:vote`            | Cast vote during voting phase        |
 
 #### Night Action Events
 
-| Event | Description |
-|-------|-------------|
-| `night:werewolf-action:done` | Werewolf target selection |
-| `night:seer-action:done` | Seer role check |
-| `night:witch-action:done` | Witch heal or poison |
-| `night:bodyguard-action:done` | Bodyguard protection |
-| `night:hunter-action:done` | Hunter death shoot |
+| Event                         | Description               |
+| ----------------------------- | ------------------------- |
+| `night:werewolf-action:done`  | Werewolf target selection |
+| `night:seer-action:done`      | Seer role check           |
+| `night:witch-action:done`     | Witch heal or poison      |
+| `night:bodyguard-action:done` | Bodyguard protection      |
+| `night:hunter-action:done`    | Hunter death shoot        |
 
 #### Server → Client Events
 
-| Event | Audience | Description |
-|-------|----------|-------------|
-| `room:updatePlayers` | Room | Player list update |
-| `room:playerDisconnected` | Room | Player disconnected notification |
-| `player:approved` | Single | Player approved by GM |
-| `player:rejected` | Single | Player rejected by GM |
-| `player:rejoined` | Single | Reconnect successful |
-| `game:phaseChanged` | Room | Phase transition |
-| `game:nightResult` | Room | Night deaths resolved |
-| `game:hunterShoot` | Room | Hunter must choose a target |
-| `game:hunterShot` | Room | Hunter fired announcement |
-| `game:gameEnded` | Room | Game over with winner + game log |
-| `game:timerStart` | Room/Role | Countdown started |
-| `game:timerStop` | Room/Role | Countdown stopped |
-| `game:timerSync` | Single | Timer sync on reconnect |
-| `night:seer-result` | Single | Seer investigation result |
-| `night:action-timeout` | Single | Player timed out |
-| `votingResult` | Room | Voting resolved |
-| `gm:nightAction` | GM Room | Night step updates for GM |
-| `gm:votingAction` | GM Room | Voting updates for GM |
-| `gm:gameEnded` | GM Room | Game ended summary for GM |
-| `gm:hunterAction` | GM Room | Hunter triggered/resolved |
-| `gm:connected` | Single | GM joined GM room successfully |
+| Event                     | Audience  | Description                      |
+| ------------------------- | --------- | -------------------------------- |
+| `room:updatePlayers`      | Room      | Player list update               |
+| `room:playerDisconnected` | Room      | Player disconnected notification |
+| `player:approved`         | Single    | Player approved by GM            |
+| `player:rejected`         | Single    | Player rejected by GM            |
+| `player:rejoined`         | Single    | Reconnect successful             |
+| `game:phaseChanged`       | Room      | Phase transition                 |
+| `game:nightResult`        | Room      | Night deaths resolved            |
+| `game:hunterShoot`        | Room      | Hunter must choose a target      |
+| `game:hunterShot`         | Room      | Hunter fired announcement        |
+| `game:gameEnded`          | Room      | Game over with winner + game log |
+| `game:timerStart`         | Room/Role | Countdown started                |
+| `game:timerStop`          | Room/Role | Countdown stopped                |
+| `game:timerSync`          | Single    | Timer sync on reconnect          |
+| `night:seer-result`       | Single    | Seer investigation result        |
+| `night:action-timeout`    | Single    | Player timed out                 |
+| `votingResult`            | Room      | Voting resolved                  |
+| `gm:nightAction`          | GM Room   | Night step updates for GM        |
+| `gm:votingAction`         | GM Room   | Voting updates for GM            |
+| `gm:gameEnded`            | GM Room   | Game ended summary for GM        |
+| `gm:hunterAction`         | GM Room   | Hunter triggered/resolved        |
+| `gm:connected`            | Single    | GM joined GM room successfully   |
 
 ### Game Flow Diagram
 
@@ -171,7 +171,7 @@ In test environment all timeouts are reduced to 100ms (voting: 1000ms).
 ## Project Structure
 
 ```
-masoi-server/
+werewolf-server/
 ├── src/
 │   ├── app.module.ts          # NestJS module (all providers)
 │   ├── main.ts                # Entry point
@@ -225,15 +225,15 @@ npx jest --testPathPattern="phase-manager"
 
 ## Game Roles
 
-| Role | Team | Ability |
-|------|------|---------|
-| `villager` | Village | No special ability |
-| `werewolf` | Werewolf | Kill one player each night |
-| `seer` | Village | Check one player's role each night |
-| `witch` | Village | One heal + one poison per game (can't self-poison, can't use both in same night) |
-| `hunter` | Village | Kill someone when dying (night or vote) |
-| `bodyguard` | Village | Protect one player each night (can't protect same person twice in a row) |
-| `tanner` | Self | Wins if voted out |
+| Role        | Team     | Ability                                                                          |
+| ----------- | -------- | -------------------------------------------------------------------------------- |
+| `villager`  | Village  | No special ability                                                               |
+| `werewolf`  | Werewolf | Kill one player each night                                                       |
+| `seer`      | Village  | Check one player's role each night                                               |
+| `witch`     | Village  | One heal + one poison per game (can't self-poison, can't use both in same night) |
+| `hunter`    | Village  | Kill someone when dying (night or vote)                                          |
+| `bodyguard` | Village  | Protect one player each night (can't protect same person twice in a row)         |
+| `tanner`    | Self     | Wins if voted out                                                                |
 
 ## Win Conditions
 
