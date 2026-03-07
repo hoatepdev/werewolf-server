@@ -15,5 +15,5 @@ COPY --from=builder /app/dist ./dist
 RUN yarn install --frozen-lockfile --production && yarn cache clean
 RUN addgroup -g 1001 -S appgroup && adduser -S appuser -u 1001 -G appgroup
 USER appuser
-EXPOSE 4001
+EXPOSE 4000
 CMD ["node", "dist/src/main.js"]

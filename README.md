@@ -18,7 +18,7 @@ A scalable, real-time backend for the Lunar Verdict (Ma Sói) game, built with [
 Create a `.env` file in the root directory:
 
 ```env
-PORT=4001
+PORT=4000
 ALLOWED_ORIGINS=http://localhost:4000
 # Production: comma-separated list of allowed origins
 ```
@@ -210,7 +210,7 @@ npm run build
 npm run start:prod
 ```
 
-The server runs on port 4001 by default.
+The server runs on port 4000 by default.
 
 ### Run tests
 
@@ -253,7 +253,7 @@ npx jest --testPathPattern="phase-manager"
 ### Docker
 
 ```bash
-docker-compose up --build   # Build and run server container (exposes port 4001)
+docker-compose up --build   # Build and run server container (exposes port 4000)
 ```
 
 The server `Dockerfile` is a multi-stage build; production entry point is `node dist/src/main.js`.
