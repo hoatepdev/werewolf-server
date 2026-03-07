@@ -1,4 +1,4 @@
-# Masoi Server
+# Werewolf Server
 
 A scalable, real-time backend for the Lunar Verdict (Ma Sói) game, built with [NestJS](https://nestjs.com/) and Socket.IO.
 
