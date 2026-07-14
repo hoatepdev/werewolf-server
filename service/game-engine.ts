@@ -162,6 +162,20 @@ export class GameEngine {
     return state.players.some((p) => p.id === playerId);
   }
 
+  private static isAlivePlayer(state: GameState, playerId: string): boolean {
+    return state.players.some((p) => p.id === playerId && p.alive);
+  }
+
+  static isValidAlivePlayer(state: GameState, playerId: string): boolean {
+    return this.isAlivePlayer(state, playerId);
+  }
+
+  private static candidateIds(
+    candidates: Array<{ id: string; username: string }>,
+  ): Set<string> {
+    return new Set(candidates.map((candidate) => candidate.id));
+  }
+
   static canTransition(state: GameState, targetPhase: Phase): boolean {
     const currentKey = state.phase === null ? 'null' : state.phase;
     const validTargets = VALID_TRANSITIONS[currentKey];
@@ -227,9 +241,10 @@ export class GameEngine {
     state: GameState,
     responses: Array<{ playerId: string; payload: RoleResponse }>,
   ): void {
+    const validTargets = this.candidateIds(this.getWerewolfCandidates(state));
     const votes: Record<string, string> = {};
     responses.forEach((res) => {
-      if (res.payload.targetId) {
+      if (res.payload.targetId && validTargets.has(res.payload.targetId)) {
         votes[res.playerId] = res.payload.targetId;
       }
     });
@@ -240,10 +255,16 @@ export class GameEngine {
     });
 
     if (Object.keys(voteCounts).length > 0) {
-      const mostVoted = Object.entries(voteCounts).reduce((a, b) =>
-        a[1] > b[1] ? a : b,
-      );
-      state.werewolfTarget = mostVoted[0];
+      let maxVotes = 0;
+      for (const count of Object.values(voteCounts)) {
+        if (count > maxVotes) maxVotes = count;
+      }
+
+      const topTargets = Object.entries(voteCounts)
+        .filter(([, count]) => count === maxVotes)
+        .map(([targetId]) => targetId);
+      const randomIndex = Math.floor(Math.random() * topTargets.length);
+      state.werewolfTarget = topTargets[randomIndex];
     }
   }
 
@@ -261,11 +282,11 @@ export class GameEngine {
     heal?: boolean,
     poisonTargetId?: string,
   ): void {
-    if (heal) {
+    if (heal && state.werewolfTarget) {
       state.witch.healUsed = true;
       state.witch.healTarget = state.werewolfTarget;
     }
-    if (poisonTargetId) {
+    if (poisonTargetId && this.isAlivePlayer(state, poisonTargetId)) {
       state.witch.poisonUsed = true;
       state.witch.poisonTarget = poisonTargetId;
     }
@@ -291,12 +312,12 @@ export class GameEngine {
     }
 
     // Werewolf kill (if not protected/healed)
-    if (werewolfTarget) {
+    if (werewolfTarget && this.isAlivePlayer(state, werewolfTarget)) {
       deaths.push({ playerId: werewolfTarget, cause: 'werewolf' });
     }
 
     // Witch poison (independent of werewolf kill)
-    if (state.witch.poisonTarget) {
+    if (state.witch.poisonTarget && this.isAlivePlayer(state, state.witch.poisonTarget)) {
       if (!deaths.find((d) => d.playerId === state.witch.poisonTarget)) {
         deaths.push({ playerId: state.witch.poisonTarget, cause: 'witch' });
       }
@@ -318,7 +339,7 @@ export class GameEngine {
   static recordVote(
     state: GameState,
     playerId: string,
-    targetId: string,
+    targetId?: string | null,
   ): void {
     if (!state.actionsReceived) {
       state.actionsReceived = new Set();
@@ -329,7 +350,9 @@ export class GameEngine {
 
     if (!state.actionsReceived.has(playerId)) {
       state.actionsReceived.add(playerId);
-      state.votes[playerId] = targetId;
+      if (targetId && this.isAlivePlayer(state, targetId)) {
+        state.votes[playerId] = targetId;
+      }
     }
   }
 
@@ -417,7 +440,7 @@ export class GameEngine {
   // --- Hunter ---
 
   static applyHunterShoot(state: GameState, targetId: string): boolean {
-    if (!this.validatePlayerId(state, targetId)) {
+    if (!this.isAlivePlayer(state, targetId)) {
       return false;
     }
     const target = state.players.find((p) => p.id === targetId);

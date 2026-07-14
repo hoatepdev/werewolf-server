@@ -470,6 +470,13 @@ describe('RoomService', () => {
     it('should return false for unknown room', () => {
       expect(service.playerReady('UNKNOWN123456', 'p1')).toBe(false);
     });
+
+    it('should return false once the game has started', () => {
+      service.playerReady(roomCode, 'p1');
+      expect(service.markGameStarted(roomCode)).toBe(true);
+
+      expect(service.playerReady(roomCode, 'p2')).toBe(false);
+    });
   });
 
   // ── findRoomBySocketId ───────────────────────────────────────────────────────
@@ -530,6 +537,34 @@ describe('RoomService', () => {
       const room = service.getRoom(roomCode)!;
       expect(room.hostId).toBe('new-gm-socket');
       expect(room.disconnectedGmId).toBeUndefined();
+    });
+  });
+
+  // ── reconnect tokens ─────────────────────────────────────────────────────────
+
+  describe('reconnect tokens', () => {
+    it('should issue and validate a reconnect token', () => {
+      const room = service.createRoom('gm-socket', 1, 'GM');
+      const token = service.issueReconnectToken(room.roomCode, 'pid-1');
+
+      expect(
+        service.validateReconnectToken(room.roomCode, 'pid-1', token),
+      ).toBe(true);
+      expect(
+        service.validateReconnectToken(room.roomCode, 'pid-1', 'wrong-token'),
+      ).toBe(false);
+    });
+  });
+
+  // ── GM room routing ──────────────────────────────────────────────────────────
+
+  describe('GM room routing', () => {
+    it('should store and return a dedicated GM room id', () => {
+      const room = service.createRoom('gm-socket', 1, 'GM');
+
+      service.setGmRoomId(room.roomCode, 'gm-room-1');
+
+      expect(service.getGmRoomId(room.roomCode)).toBe('gm-room-1');
     });
   });
 

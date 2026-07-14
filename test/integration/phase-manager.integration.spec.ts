@@ -1,6 +1,11 @@
 import { PhaseManager } from '../../service/phase-manager.service';
 import { RoomService } from '../../service/room.service';
 import { GameState, RoleResponse } from '../../service/game-engine';
+
+type PhaseManagerInternals = {
+  gameStates: Map<string, GameState>;
+  pendingResponses: Map<string, unknown>;
+};
 import { createMockSocketServer } from '../helpers/mock-server';
 import { createStandardPlayers } from '../fixtures/players';
 
@@ -20,11 +25,13 @@ class TestablePhaseManager extends PhaseManager {
   }
 
   getGameStateForTest(roomId: string): GameState | undefined {
-    return (this as any).gameStates.get(roomId);
+    const internals = this as unknown as PhaseManagerInternals;
+    return internals.gameStates.get(roomId);
   }
 
   hasPendingResponse(roomId: string): boolean {
-    return (this as any).pendingResponses.has(roomId);
+    const internals = this as unknown as PhaseManagerInternals;
+    return internals.pendingResponses.has(roomId);
   }
 }
 
@@ -106,6 +113,26 @@ describe('PhaseManager Integration', () => {
       const state = phaseManager.getGameStateForTest(roomId);
       expect(state?.bodyguardTarget).toBeUndefined();
       expect(state?.seerTarget).toBeUndefined();
+    });
+
+    it('should ignore role responses from players outside the active role', () => {
+      const resolve = jest.fn();
+      const responses: Array<{ playerId: string; payload: RoleResponse }> = [];
+      const responded = new Set<string>();
+      (phaseManager as any).pendingResponses.set(roomId, {
+        resolve,
+        responses,
+        responded,
+        rolePlayers: [{ id: 'socket-p3', username: 'Seer', role: 'seer' }],
+      });
+
+      phaseManager.handleRoleResponse(roomId, 'socket-p6', {
+        targetId: 'socket-p1',
+      });
+
+      expect(resolve).not.toHaveBeenCalled();
+      expect(responses).toHaveLength(0);
+      expect(responded.has('socket-p6')).toBe(false);
     });
   });
 
@@ -412,6 +439,43 @@ describe('PhaseManager — full night cycle (zero-delay)', () => {
     const state = phaseManager.getGameStateForTest(roomId)!;
     const p6 = state.players.find((p) => p.id === 'socket-p6');
     expect(p6?.alive).toBe(false);
+  });
+
+  it('should allow witch to heal and poison in the same night', async () => {
+    const nightPromise = phaseManager.startNightPhase(roomId);
+
+    // Bodyguard: protect someone else so witch heal is responsible for saving p6
+    await submitWhenReady('socket-p5', { targetId: 'socket-p8' });
+
+    // Werewolves: both target socket-p6
+    await submitWhenReady(
+      'socket-p1',
+      { targetId: 'socket-p6' },
+      'socket-p2',
+      'socket-p6',
+    );
+
+    // Witch: heal socket-p6 and poison socket-p7 in the same night
+    await submitWhenReady('socket-p4', {
+      heal: true,
+      poisonTargetId: 'socket-p7',
+    });
+
+    // Seer: skip
+    await submitWhenReady('socket-p3', {});
+
+    await nightPromise;
+
+    const state = phaseManager.getGameStateForTest(roomId)!;
+    expect(state.players.find((p) => p.id === 'socket-p6')?.alive).toBe(true);
+    expect(state.players.find((p) => p.id === 'socket-p7')?.alive).toBe(false);
+
+    const nightLog = state.gameLog.find((e) => e.type === 'night_result');
+    expect(nightLog).toMatchObject({
+      type: 'night_result',
+      witchHeal: true,
+      witchPoisonTarget: 'Villager2',
+    });
   });
 
   it('should advance round counter after each night phase', async () => {

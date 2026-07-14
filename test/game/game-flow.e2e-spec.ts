@@ -2,6 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { INestApplication } from '@nestjs/common';
 import { io, Socket } from 'socket.io-client';
 import { AppModule } from '../../src/app.module';
+import { Player } from '../../types';
 
 describe('Game Flow E2E (WebSocket)', () => {
   let app: INestApplication;
@@ -77,18 +78,23 @@ describe('Game Flow E2E (WebSocket)', () => {
   }
 
   /** Helper: Get players via GM using ack callback (race-condition-free) */
-  function getPlayers(gm: Socket, roomCode: string): Promise<any[]> {
+  function getPlayers(gm: Socket, roomCode: string): Promise<Player[]> {
     return new Promise((resolve) => {
-      gm.emit('rq_gm:getPlayers', { roomCode }, (players: any[]) =>
+      gm.emit('rq_gm:getPlayers', { roomCode }, (players: Player[]) =>
         resolve(players),
       );
     });
   }
 
   /** Helper: Approve a player by username, returns the player object */
-  async function approvePlayer(gm: Socket, roomCode: string, username: string) {
+  async function approvePlayer(
+    gm: Socket,
+    roomCode: string,
+    username: string,
+  ): Promise<Player> {
     const players = await getPlayers(gm, roomCode);
     const player = players.find((p) => p.username === username);
+    if (!player) throw new Error(`Player not found: ${username}`);
     gm.emit('rq_gm:approvePlayer', { roomCode, playerId: player.id });
     return player;
   }
@@ -158,7 +164,8 @@ describe('Game Flow E2E (WebSocket)', () => {
 
       const players = await getPlayers(gmSocket, roomCode);
       const pendingPlayer = players.find((p) => p.username === 'Player1');
-      expect(pendingPlayer?.status).toBe('pending');
+      if (!pendingPlayer) throw new Error('Player1 not found');
+      expect(pendingPlayer.status).toBe('pending');
 
       const approvedEventPromise = waitForEvent(
         playerSocket,
@@ -305,7 +312,7 @@ describe('Game Flow E2E (WebSocket)', () => {
 
       let playerSocket = await createSocket();
       playerSockets.push(playerSocket);
-      await new Promise<any>((resolve) => {
+      const joinResponse = await new Promise<any>((resolve) => {
         playerSocket.emit(
           'rq_player:joinRoom',
           {
@@ -334,6 +341,7 @@ describe('Game Flow E2E (WebSocket)', () => {
       playerSocket.emit('rq_player:rejoinRoom', {
         roomCode,
         persistentPlayerId: 'persistent-player-1',
+        reconnectToken: joinResponse.reconnectToken,
       });
 
       await rejoinedEventPromise;
@@ -452,6 +460,7 @@ describe('Game Flow E2E (WebSocket)', () => {
       });
 
       const pendingPlayer = await approvePlayer(gmSocket, roomCode, 'Player1');
+      await waitForEvent(gmSocket, 'room:updatePlayers');
 
       // GM eliminates player — wait for room:updatePlayers broadcast as confirmation
       const elimUpdatePromise = waitForEvent(gmSocket, 'room:updatePlayers');
@@ -562,7 +571,7 @@ describe('Game Flow E2E (WebSocket)', () => {
       playerSockets.push(playerSocket);
       const persistentPlayerId = 'test-persistent-id-abc';
 
-      await new Promise<any>((resolve) =>
+      const joinResponse = await new Promise<any>((resolve) =>
         playerSocket.emit(
           'rq_player:joinRoom',
           {
@@ -577,6 +586,7 @@ describe('Game Flow E2E (WebSocket)', () => {
 
       const pending = await getPlayers(gmSocket, roomCode);
       const p = pending.find((p) => p.username === 'Reconnector');
+      if (!p) throw new Error('Reconnector not found');
       gmSocket.emit('rq_gm:approvePlayer', { roomCode, playerId: p.id });
       await waitForEvent(playerSocket, 'player:approved');
 
@@ -604,6 +614,7 @@ describe('Game Flow E2E (WebSocket)', () => {
       newPlayerSocket.emit('rq_player:rejoinRoom', {
         roomCode,
         persistentPlayerId,
+        reconnectToken: joinResponse.reconnectToken,
       });
 
       const rejoinedData = (await rejoinedPromise) as any;

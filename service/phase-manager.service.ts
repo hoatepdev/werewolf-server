@@ -30,10 +30,13 @@ export class PhaseManager {
   private readonly ROLE_TIMEOUTS: Record<string, number> =
     process.env.NODE_ENV === 'test'
       ? { bodyguard: 100, werewolf: 100, witch: 100, seer: 100 }
-      : { bodyguard: 30000, werewolf: 60000, witch: 30000, seer: 30000 };
+      : { bodyguard: 15000, werewolf: 60000, witch: 30000, seer: 15000 };
 
   protected delayFn: (ms: number) => Promise<void> = (ms) =>
-    new Promise((resolve) => setTimeout(resolve, ms));
+    new Promise((resolve) => {
+      const timeout = setTimeout(resolve, ms);
+      timeout.unref?.();
+    });
 
   constructor(private readonly roomService: RoomService) {}
 
@@ -70,6 +73,7 @@ export class PhaseManager {
         `Transition lock for room ${roomId} force-released after timeout`,
       );
     }, this.LOCK_TIMEOUT_MS);
+    t.unref?.();
     this.lockTimeouts.set(roomId, t);
     return true;
   }
@@ -330,7 +334,7 @@ export class PhaseManager {
     if (response && response.length > 0) {
       const witchResponse = response[0];
 
-      // Guard: witch may not poison herself, and may not heal + poison in the same night
+      // Guard: witch may not poison herself. Healing and poisoning in the same night is allowed.
       const witchPlayer = state.players.find(
         (p) => p.id === witchResponse.playerId,
       );
@@ -338,11 +342,10 @@ export class PhaseManager {
       const heal = witchResponse.payload.heal;
 
       const selfPoison = poisonTargetId && witchPlayer?.id === poisonTargetId;
-      const bothUsed = heal && poisonTargetId;
 
-      if (selfPoison || bothUsed) {
+      if (selfPoison) {
         this.logger.warn(
-          `Witch action rejected for ${witchResponse.playerId}: selfPoison=${String(selfPoison)}, bothUsed=${String(bothUsed)}`,
+          `Witch action rejected for ${witchResponse.playerId}: selfPoison=${String(selfPoison)}`,
         );
       } else {
         GameEngine.applyWitchAction(state, heal, poisonTargetId);
@@ -794,7 +797,7 @@ export class PhaseManager {
       state.votingResolved = false;
       state.hunterShooting = false;
 
-      const votingDuration = process.env.NODE_ENV === 'test' ? 1000 : 60000;
+      const votingDuration = process.env.NODE_ENV === 'test' ? 1000 : 45000;
       const deadline = Date.now() + votingDuration;
 
       // Store timer info for reconnect recovery
@@ -826,7 +829,7 @@ export class PhaseManager {
         this.emitToGM(state.gmRoomId, 'gm:votingAction', {
           type: 'phaseChanged',
           message:
-            'Chuyển sang giai đoạn bỏ phiếu, các bạn có 1 phút để bỏ phiếu.',
+            'Chuyển sang giai đoạn bỏ phiếu, các bạn có 45 giây để bỏ phiếu.',
         });
       }
 
@@ -918,6 +921,8 @@ export class PhaseManager {
     if (!pending) return;
 
     const { resolve, responses, responded, rolePlayers } = pending;
+    const expectedPlayer = rolePlayers.find((player) => player.id === playerId);
+    if (!expectedPlayer) return;
 
     if (!responded.has(playerId)) {
       responded.add(playerId);
@@ -930,7 +935,11 @@ export class PhaseManager {
     }
   }
 
-  handleVotingResponse(roomId: string, playerId: string, targetId: string) {
+  handleVotingResponse(
+    roomId: string,
+    playerId: string,
+    targetId?: string | null,
+  ) {
     const state = this.gameStates.get(roomId);
     if (!state || state.phase !== 'voting') return;
     // Prevent double-trigger: if voting already resolved, ignore
@@ -991,13 +1000,13 @@ export class PhaseManager {
       const context = state.hunterDeathContext;
       state.hunterShooting = false;
       state.hunterDeathContext = undefined;
-      setTimeout(() => {
+      void this.delayFn(3000).then(() => {
         if (context === 'night') {
           void this.startDayPhase(roomId);
         } else {
           void this.startNightPhase(roomId);
         }
-      }, 3000);
+      });
     }
   }
 
@@ -1096,6 +1105,7 @@ export class PhaseManager {
   // --- Init ---
 
   initGameState(roomId: string, players: Player[], gmRoomId?: string): void {
+    if (this.gameStates.has(roomId)) return;
     const state = GameEngine.createInitialState(players, gmRoomId);
     this.gameStates.set(roomId, state);
   }

@@ -22,6 +22,12 @@
 import { PhaseManager } from '../../service/phase-manager.service';
 import { RoomService } from '../../service/room.service';
 import { GameState } from '../../service/game-engine';
+
+type PhaseManagerInternals = {
+  gameStates: Map<string, GameState>;
+  resolveNightActions(roomId: string): void;
+  startDayPhase(roomId: string): Promise<void>;
+};
 import { createMockSocketServer } from '../helpers/mock-server';
 import { createStandardPlayers } from '../fixtures/players';
 
@@ -31,17 +37,20 @@ class TestablePhaseManager extends PhaseManager {
   }
 
   getGameStateForTest(roomId: string): GameState | undefined {
-    return (this as any).gameStates.get(roomId);
+    const internals = this as unknown as PhaseManagerInternals;
+    return internals.gameStates.get(roomId);
   }
 
   /** Directly invoke the private resolveNightActions method. */
   resolveNightActionsForTest(roomId: string): void {
-    return (this as any).resolveNightActions(roomId);
+    const internals = this as unknown as PhaseManagerInternals;
+    internals.resolveNightActions(roomId);
   }
 
   /** Directly invoke the private startDayPhase method (for assertion helpers). */
   startDayPhaseForTest(roomId: string): Promise<void> {
-    return (this as any).startDayPhase(roomId);
+    const internals = this as unknown as PhaseManagerInternals;
+    return internals.startDayPhase(roomId);
   }
 }
 

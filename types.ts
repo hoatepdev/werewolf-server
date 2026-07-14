@@ -17,6 +17,7 @@ export interface Player {
   avatarKey: number;
   username: string;
   status: PlayerStatus;
+  ready?: boolean;
   alive?: boolean;
   role?: Role;
 }
@@ -28,6 +29,8 @@ export interface Room {
   phase: Phase;
   round: number;
   actions: any[];
+  gmRoomId?: string;
+  gameStarted?: boolean;
   disconnectedGmId?: string;
   lastActivityAt: number;
 }

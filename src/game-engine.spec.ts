@@ -209,14 +209,17 @@ describe('GameEngine', () => {
       expect(state.werewolfTarget).toBe('p6');
     });
 
-    it('should pick one target on tie', () => {
+    it('should randomly pick among tied werewolf targets', () => {
+      const randomSpy = jest.spyOn(Math, 'random').mockReturnValue(0.75);
       const state = GameEngine.createInitialState(createPlayers());
+
       GameEngine.applyWerewolfVotes(state, [
         { playerId: 'p1', payload: { targetId: 'p3' } },
         { playerId: 'p2', payload: { targetId: 'p6' } },
       ]);
-      // Both have 1 vote, reduce picks the first one it encounters
-      expect(state.werewolfTarget).toBeDefined();
+
+      expect(state.werewolfTarget).toBe('p6');
+      randomSpy.mockRestore();
     });
   });
 
@@ -382,6 +385,19 @@ describe('GameEngine', () => {
       state.players[5].alive = false; // one villager dead
 
       expect(GameEngine.checkWinCondition(state)).toBeNull();
+    });
+
+    it('should detect villagers win when the last wolf and last non-wolf die together', () => {
+      const state = GameEngine.createInitialState(createPlayers());
+      state.players.forEach((player) => {
+        player.alive = player.id === 'p1' || player.id === 'p6';
+      });
+      state.werewolfTarget = 'p6';
+      state.witch.poisonTarget = 'p1';
+
+      GameEngine.resolveNightActions(state);
+
+      expect(GameEngine.checkWinCondition(state)).toBe('villagers');
     });
   });
 
@@ -554,14 +570,13 @@ describe('GameEngine', () => {
       expect(result.deaths[0]).toEqual({ playerId: 'p6', cause: 'witch' });
     });
 
-    it('should not mark player as dead if werewolf target does not exist in player list', () => {
+    it('should ignore werewolf target that does not exist in player list', () => {
       const state = GameEngine.createInitialState(createPlayers());
       state.werewolfTarget = 'nonexistent';
 
       const result = GameEngine.resolveNightActions(state);
 
-      // 'nonexistent' gets added to deaths but no player is mutated
-      expect(result.deaths).toHaveLength(1);
+      expect(result.deaths).toHaveLength(0);
       expect(state.players.every((p) => p.alive)).toBe(true);
     });
   });
@@ -615,7 +630,7 @@ describe('GameEngine', () => {
       expect(GameEngine.checkWinCondition(state)).toBe('werewolves');
     });
 
-    it('should return null when no players are alive (degenerate state)', () => {
+    it('should return villagers when no players are alive', () => {
       const state = GameEngine.createInitialState(createPlayers());
       state.players.forEach((p) => {
         p.alive = false;
@@ -633,13 +648,13 @@ describe('GameEngine', () => {
   });
 
   describe('applyHunterShoot — edge cases', () => {
-    it('should mark already-dead player as dead again (idempotent)', () => {
+    it('should reject already-dead target', () => {
       const state = GameEngine.createInitialState(createPlayers());
       state.players[0].alive = false; // p1 already dead
 
       const success = GameEngine.applyHunterShoot(state, 'p1');
 
-      expect(success).toBe(true); // p1 exists in list, so returns true
+      expect(success).toBe(false);
       expect(state.players.find((p) => p.id === 'p1')?.alive).toBe(false);
     });
 
@@ -679,6 +694,16 @@ describe('GameEngine', () => {
       GameEngine.recordVote(state, 'p5', 'p1');
 
       expect(state.votes).toEqual({ p3: 'p1', p4: 'p2', p5: 'p1' });
+    });
+
+    it('should count a response but ignore invalid vote targets', () => {
+      const state = GameEngine.createInitialState(createPlayers());
+      state.actionsReceived = new Set();
+
+      GameEngine.recordVote(state, 'p3', 'nonexistent');
+
+      expect(state.actionsReceived.has('p3')).toBe(true);
+      expect(state.votes['p3']).toBeUndefined();
     });
   });
 

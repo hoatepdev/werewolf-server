@@ -142,6 +142,7 @@ export class GameGateway implements OnGatewayInit, OnGatewayDisconnect {
     }
 
     await socket.join(data.gmRoomId);
+    this.roomService.setGmRoomId(data.roomCode, data.gmRoomId);
     this.phaseManager.setGmRoom(data.roomCode, data.gmRoomId);
     socket.emit('gm:connected', {
       roomCode: data.roomCode,
@@ -183,6 +184,12 @@ export class GameGateway implements OnGatewayInit, OnGatewayDisconnect {
       return {
         success,
         playerId: socket.id,
+        reconnectToken: data.persistentPlayerId
+          ? this.roomService.issueReconnectToken(
+              data.roomCode,
+              data.persistentPlayerId,
+            )
+          : undefined,
         message: 'Successfully joined room',
       };
     } else {
@@ -193,11 +200,25 @@ export class GameGateway implements OnGatewayInit, OnGatewayDisconnect {
   @SubscribeMessage('rq_player:rejoinRoom')
   async handleRejoinRoom(
     @ConnectedSocket() socket: Socket,
-    @MessageBody() data: { roomCode: string; persistentPlayerId: string },
+    @MessageBody()
+    data: {
+      roomCode: string;
+      persistentPlayerId: string;
+      reconnectToken: string;
+    },
   ) {
     if (
       !this.validateRoomCode(data) ||
-      !this.validateString(data?.persistentPlayerId, 64)
+      !this.validateString(data?.persistentPlayerId, 64) ||
+      !this.validateString(data?.reconnectToken, 100)
+    )
+      return;
+    if (
+      !this.roomService.validateReconnectToken(
+        data.roomCode,
+        data.persistentPlayerId,
+        data.reconnectToken,
+      )
     )
       return;
 
@@ -214,9 +235,15 @@ export class GameGateway implements OnGatewayInit, OnGatewayDisconnect {
       data.persistentPlayerId,
       socket.id,
     );
+    const players = this.roomService.getPlayers(data.roomCode);
+    const currentPlayer = players.find((p) => p.id === socket.id);
     socket.emit('player:rejoined', {
       playerId: socket.id,
       roomCode: data.roomCode,
+      role: currentPlayer?.role,
+      phase: this.phaseManager.getPhase(data.roomCode),
+      players,
+      alive: currentPlayer?.alive ?? null,
     });
 
     // Sync timer state if a countdown is active
@@ -449,13 +476,14 @@ export class GameGateway implements OnGatewayInit, OnGatewayDisconnect {
       if (success) {
         socket.emit('player:readySuccess', { roomCode: data.roomCode });
         this.server.to(data.roomCode).emit('room:readySuccess');
+        if (!this.roomService.markGameStarted(data.roomCode)) return;
         const approvedPlayers = room.players.filter(
           (player) => player.status === 'approved',
         );
         this.phaseManager.initGameState(
           data.roomCode,
           approvedPlayers,
-          data.roomCode,
+          this.roomService.getGmRoomId(data.roomCode) ?? data.roomCode,
         );
       }
     }
@@ -467,6 +495,10 @@ export class GameGateway implements OnGatewayInit, OnGatewayDisconnect {
     @MessageBody() data: { roomCode: string },
   ) {
     if (!this.validateRoomCode(data)) return;
+    if (!this.isHost(socket, data.roomCode)) {
+      socket.emit('room:phaseError', { message: 'Not authorized.' });
+      return;
+    }
 
     try {
       const currentPhase = this.phaseManager.getPhase(data.roomCode);
@@ -580,9 +612,12 @@ export class GameGateway implements OnGatewayInit, OnGatewayDisconnect {
   @SubscribeMessage('voting:done')
   handleVotingDone(
     @ConnectedSocket() socket: Socket,
-    @MessageBody() data: { roomCode: string; targetId: string },
+    @MessageBody() data: { roomCode: string; targetId?: string | null },
   ) {
-    if (!this.validateRoomCode(data) || !this.validateString(data?.targetId)) {
+    if (
+      !this.validateRoomCode(data) ||
+      (data.targetId != null && !this.validateString(data.targetId))
+    ) {
       return;
     }
     this.phaseManager.handleVotingResponse(

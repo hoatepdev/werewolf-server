@@ -1,4 +1,5 @@
 import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
+import { randomUUID } from 'crypto';
 import { Room, Player, Role } from '../types';
 
 const ROOM_TTL_MS = 2 * 60 * 60 * 1000; // 2 hours
@@ -8,6 +9,7 @@ const MAX_ROOM_CODE_RETRIES = 100; // Prevent infinite loop
 @Injectable()
 export class RoomService implements OnModuleDestroy {
   private rooms = new Map<string, Room>();
+  private reconnectTokens = new Map<string, string>();
   private readonly logger = new Logger(RoomService.name);
   private cleanupTimer: NodeJS.Timeout;
 
@@ -16,6 +18,7 @@ export class RoomService implements OnModuleDestroy {
       () => this.cleanupStaleRooms(),
       CLEANUP_INTERVAL_MS,
     );
+    this.cleanupTimer.unref?.();
   }
 
   onModuleDestroy() {
@@ -35,6 +38,9 @@ export class RoomService implements OnModuleDestroy {
     for (const [code, room] of this.rooms) {
       if (now - room.lastActivityAt > ROOM_TTL_MS) {
         this.rooms.delete(code);
+        for (const key of this.reconnectTokens.keys()) {
+          if (key.startsWith(`${code}:`)) this.reconnectTokens.delete(key);
+        }
         this.onRoomCleanup?.(code);
         cleaned++;
       }
@@ -85,6 +91,29 @@ export class RoomService implements OnModuleDestroy {
     this.touchRoom(roomCode);
   }
 
+  setGmRoomId(roomCode: string, gmRoomId: string): void {
+    const room = this.rooms.get(roomCode);
+    if (!room) return;
+    room.gmRoomId = gmRoomId;
+    this.touchRoom(roomCode);
+  }
+
+  getGmRoomId(roomCode: string): string | undefined {
+    return this.rooms.get(roomCode)?.gmRoomId;
+  }
+
+  markGameStarted(roomCode: string): boolean {
+    const room = this.rooms.get(roomCode);
+    if (!room || room.gameStarted) return false;
+    room.gameStarted = true;
+    this.touchRoom(roomCode);
+    return true;
+  }
+
+  isGameStarted(roomCode: string): boolean {
+    return this.rooms.get(roomCode)?.gameStarted === true;
+  }
+
   private static generateRoomCode(length = 12): string {
     const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
     let code = '';
@@ -130,6 +159,27 @@ export class RoomService implements OnModuleDestroy {
 
   getRoom(roomCode: string): Room | undefined {
     return this.rooms.get(roomCode);
+  }
+
+  private reconnectKey(roomCode: string, persistentId: string): string {
+    return `${roomCode}:${persistentId}`;
+  }
+
+  issueReconnectToken(roomCode: string, persistentId: string): string {
+    const token = randomUUID();
+    this.reconnectTokens.set(this.reconnectKey(roomCode, persistentId), token);
+    return token;
+  }
+
+  validateReconnectToken(
+    roomCode: string,
+    persistentId: string,
+    token: string,
+  ): boolean {
+    return (
+      this.reconnectTokens.get(this.reconnectKey(roomCode, persistentId)) ===
+      token
+    );
   }
 
   addPlayer(roomCode: string, player: Player): boolean {
@@ -286,14 +336,14 @@ export class RoomService implements OnModuleDestroy {
 
   playerReady(roomCode: string, playerId: string): boolean {
     const room = this.rooms.get(roomCode);
-    if (!room) return false;
+    if (!room || room.gameStarted) return false;
     const player = room.players.find((p) => p.id === playerId);
     if (!player || player.status !== 'approved') return false;
 
-    const flag = room.players
-      .filter((p) => p.status === 'approved')
-      .every((p) => p.alive === true || p.id === playerId);
+    player.ready = true;
     player.alive = true;
-    return flag;
+    return room.players
+      .filter((p) => p.status === 'approved')
+      .every((p) => p.ready === true);
   }
 }

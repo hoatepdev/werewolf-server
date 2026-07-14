@@ -42,7 +42,13 @@ describe('GameGateway', () => {
       isGmReconnection: jest.fn(),
       reconnectGm: jest.fn(),
       rejoinPlayer: jest.fn(),
+      issueReconnectToken: jest.fn(),
+      validateReconnectToken: jest.fn(),
       setOnRoomCleanup: jest.fn(),
+      setGmRoomId: jest.fn(),
+      getGmRoomId: jest.fn(),
+      markGameStarted: jest.fn(),
+      isGameStarted: jest.fn(),
       onModuleDestroy: jest.fn(),
     } as unknown as RoomService;
 
@@ -257,6 +263,7 @@ describe('GameGateway', () => {
       await gateway['handleRejoinRoom'](socket, {
         roomCode: '',
         persistentPlayerId: 'pid-1',
+        reconnectToken: 'token-1',
       });
       expect(roomService.rejoinPlayer).not.toHaveBeenCalled();
 
@@ -264,6 +271,7 @@ describe('GameGateway', () => {
       await gateway['handleRejoinRoom'](socket, {
         roomCode: 'VALIDROOM1234',
         persistentPlayerId: '',
+        reconnectToken: 'token-1',
       });
       expect(roomService.rejoinPlayer).not.toHaveBeenCalled();
     });
@@ -279,6 +287,9 @@ describe('GameGateway', () => {
         persistentId: 'pid-1',
       };
       (roomService.rejoinPlayer as jest.Mock).mockReturnValue(mockPlayer);
+      (roomService.getPlayers as jest.Mock).mockReturnValue([mockPlayer]);
+      (roomService.validateReconnectToken as jest.Mock).mockReturnValue(true);
+      (phaseManager.getPhase as jest.Mock).mockReturnValue('voting');
       (phaseManager.getTimerInfo as jest.Mock).mockReturnValue({
         context: 'voting',
         durationMs: 60000,
@@ -288,8 +299,14 @@ describe('GameGateway', () => {
       await gateway['handleRejoinRoom'](socket, {
         roomCode: 'VALIDROOM1234',
         persistentPlayerId: 'pid-1',
+        reconnectToken: 'token-1',
       });
 
+      expect(roomService.validateReconnectToken).toHaveBeenCalledWith(
+        'VALIDROOM1234',
+        'pid-1',
+        'token-1',
+      );
       expect(roomService.rejoinPlayer).toHaveBeenCalledWith(
         'VALIDROOM1234',
         'new-socket',
@@ -572,13 +589,35 @@ describe('GameGateway', () => {
   });
 
   describe('rq_gm:nextPhase', () => {
+    beforeEach(() => {
+      (roomService.getRoom as jest.Mock).mockReturnValue({
+        hostId: 'gm-socket',
+        players: [],
+        phase: 'night',
+        round: 0,
+        actions: [],
+        lastActivityAt: Date.now(),
+      });
+    });
+
     it('should validate room code', () => {
       const socket = makeSocket('gm-socket');
 
-      gateway['handleNextPhase'](socket, { roomCode: 'invalid!' });
+      gateway['handleNextPhase'](socket, { roomCode: '' });
 
       // Should not call canTransition with invalid code
       expect(phaseManager.canTransition).not.toHaveBeenCalled();
+    });
+
+    it('should reject non-host sockets', () => {
+      const socket = makeSocket('player-socket');
+
+      gateway['handleNextPhase'](socket, { roomCode: 'ROOM123' });
+
+      expect(phaseManager.getPhase).not.toHaveBeenCalled();
+      expect(socket.emit).toHaveBeenCalledWith('room:phaseError', {
+        message: 'Not authorized.',
+      });
     });
 
     it('should transition from day to voting when allowed', () => {
