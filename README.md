@@ -10,6 +10,8 @@ A scalable, real-time backend for the Lunar Verdict (Ma Sói) game, built with [
 - WebSocket gateway for client-server communication
 - In-memory state management (no database required)
 - GM and player reconnect support
+- Authoritative state snapshot sync for reconnect/focus recovery
+- Firebase Cloud Messaging push notifications for important background events
 - Narrative game log (night results, voting results, hunter shots, game end)
 - Written in TypeScript, modular and testable
 
@@ -21,6 +23,13 @@ Create a `.env` file in the root directory:
 PORT=4000
 ALLOWED_ORIGINS=http://localhost:4000
 # Production: comma-separated list of allowed origins
+
+# Firebase Admin for Cloud Messaging push notifications.
+# Use either explicit service account fields or GOOGLE_APPLICATION_CREDENTIALS.
+FIREBASE_PROJECT_ID=
+FIREBASE_CLIENT_EMAIL=
+FIREBASE_PRIVATE_KEY=
+# GOOGLE_APPLICATION_CREDENTIALS=/absolute/path/to/service-account.json
 ```
 
 ## Architecture
