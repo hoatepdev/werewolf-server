@@ -696,13 +696,14 @@ describe('GameEngine', () => {
       expect(state.votes).toEqual({ p3: 'p1', p4: 'p2', p5: 'p1' });
     });
 
-    it('should count a response but ignore invalid vote targets', () => {
+    it('should reject invalid vote targets without consuming a response', () => {
       const state = GameEngine.createInitialState(createPlayers());
       state.actionsReceived = new Set();
 
-      GameEngine.recordVote(state, 'p3', 'nonexistent');
+      const result = GameEngine.recordVote(state, 'p3', 'nonexistent');
 
-      expect(state.actionsReceived.has('p3')).toBe(true);
+      expect(result).toEqual({ status: 'rejected', reason: 'invalid_target' });
+      expect(state.actionsReceived.has('p3')).toBe(false);
       expect(state.votes['p3']).toBeUndefined();
     });
   });

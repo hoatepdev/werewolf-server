@@ -72,6 +72,13 @@ describe('RoomService', () => {
       expect(room.phase).toBe('night');
       expect(room.round).toBe(0);
     });
+
+    it('should store GM persistent id on the room and GM player', () => {
+      const room = service.createRoom('socket-1', 1, 'GM', undefined, 'gm-pid');
+
+      expect(room.gmPersistentId).toBe('gm-pid');
+      expect(room.players[0].persistentId).toBe('gm-pid');
+    });
   });
 
   // ── getRoom ──────────────────────────────────────────────────────────────────
@@ -273,6 +280,93 @@ describe('RoomService', () => {
 
     it('should return false for unknown room', () => {
       expect(service.rejectPlayer('UNKNOWN123456', 'p1')).toBe(false);
+    });
+  });
+
+  // ── lifecycle ────────────────────────────────────────────────────────────────
+
+  describe('room lifecycle', () => {
+    let roomCode: string;
+
+    beforeEach(() => {
+      const room = service.createRoom('gm-socket', 1, 'GM', undefined, 'gm-pid');
+      roomCode = room.roomCode;
+    });
+
+    it('should remove a pending player who leaves', () => {
+      service.addPlayer(
+        roomCode,
+        makePlayer({ id: 'p1', persistentId: 'pid-1' }),
+      );
+      const token = service.issueReconnectToken(roomCode, 'pid-1');
+
+      const result = service.leavePlayer(roomCode, 'p1');
+
+      expect(result).toEqual(expect.objectContaining({ success: true, status: 'removed' }));
+      expect(service.getPlayers(roomCode).some((p) => p.id === 'p1')).toBe(false);
+      expect(service.validateReconnectToken(roomCode, 'pid-1', token)).toBe(false);
+    });
+
+    it('should remove an approved pre-game player who leaves', () => {
+      service.addPlayer(roomCode, makePlayer({ id: 'p1' }));
+      service.approvePlayer(roomCode, 'p1');
+
+      const result = service.leavePlayer(roomCode, 'p1');
+
+      expect(result.status).toBe('removed');
+      expect(service.getPlayers(roomCode).some((p) => p.id === 'p1')).toBe(false);
+    });
+
+    it('should mark an active-game player dead without removing them', () => {
+      service.addPlayer(roomCode, makePlayer({ id: 'p1', persistentId: 'pid-1' }));
+      service.approvePlayer(roomCode, 'p1');
+      service.randomizeRoles(roomCode, ['werewolf']);
+      service.playerReady(roomCode, 'p1');
+      service.markGameStarted(roomCode);
+
+      const result = service.leavePlayer(roomCode, 'p1');
+      const player = service.getPlayers(roomCode).find((p) => p.id === 'p1');
+
+      expect(result.status).toBe('left_active_game');
+      expect(player).toBeDefined();
+      expect(player?.alive).toBe(false);
+      expect(service.getRoom(roomCode)?.actions).toEqual(
+        expect.arrayContaining([expect.objectContaining({ type: 'player_left' })]),
+      );
+    });
+
+    it('should update player info', () => {
+      service.addPlayer(roomCode, makePlayer({ id: 'p1' }));
+
+      const result = service.updatePlayerInfo(roomCode, 'p1', 'Tên mới', 7);
+
+      expect(result.success).toBe(true);
+      expect(result.player).toEqual(
+        expect.objectContaining({ username: 'Tên mới', avatarKey: 7 }),
+      );
+    });
+
+    it('should reset room for replay and preserve approved players', () => {
+      service.addPlayer(roomCode, makePlayer({ id: 'p1', persistentId: 'pid-1' }));
+      service.addPlayer(roomCode, makePlayer({ id: 'pending' }));
+      service.approvePlayer(roomCode, 'p1');
+      service.randomizeRoles(roomCode, ['werewolf']);
+      service.playerReady(roomCode, 'p1');
+      service.markGameStarted(roomCode);
+
+      const room = service.resetRoom(roomCode);
+      const player = room?.players.find((p) => p.id === 'p1');
+
+      expect(room?.gameStarted).toBe(false);
+      expect(room?.phase).toBe('night');
+      expect(room?.round).toBe(0);
+      expect(room?.actions).toEqual([]);
+      expect(player).toEqual(
+        expect.objectContaining({ status: 'approved', ready: false }),
+      );
+      expect(player?.role).toBeUndefined();
+      expect(player?.alive).toBeUndefined();
+      expect(room?.players.some((p) => p.id === 'pending')).toBe(false);
     });
   });
 
@@ -538,6 +632,48 @@ describe('RoomService', () => {
       expect(room.hostId).toBe('new-gm-socket');
       expect(room.disconnectedGmId).toBeUndefined();
     });
+
+    it('should update hostId and GM player id on credentialed reconnectGm', () => {
+      const room = service.createRoom(
+        'gm-socket-2',
+        1,
+        'GM2',
+        undefined,
+        'gm-pid-2',
+      );
+      service.setGmDisconnected(room.roomCode, 'gm-socket-2');
+
+      const gm = service.reconnectGm(
+        room.roomCode,
+        'new-gm-socket',
+        'gm-pid-2',
+      );
+
+      expect(gm).not.toBeNull();
+      expect(gm?.id).toBe('new-gm-socket');
+      expect(service.getRoom(room.roomCode)?.hostId).toBe('new-gm-socket');
+      expect(service.getRoom(room.roomCode)?.disconnectedGmId).toBeUndefined();
+      expect(service.findRoomBySocketId('new-gm-socket')).toBe(room.roomCode);
+    });
+
+    it('should reject credentialed reconnectGm with wrong GM persistent id', () => {
+      const room = service.createRoom(
+        'gm-socket-2',
+        1,
+        'GM2',
+        undefined,
+        'gm-pid-2',
+      );
+
+      const gm = service.reconnectGm(
+        room.roomCode,
+        'new-gm-socket',
+        'wrong-gm-pid',
+      );
+
+      expect(gm).toBeNull();
+      expect(service.getRoom(room.roomCode)?.hostId).toBe('gm-socket-2');
+    });
   });
 
   // ── reconnect tokens ─────────────────────────────────────────────────────────
@@ -552,6 +688,46 @@ describe('RoomService', () => {
       ).toBe(true);
       expect(
         service.validateReconnectToken(room.roomCode, 'pid-1', 'wrong-token'),
+      ).toBe(false);
+    });
+
+    it('should issue and validate a GM reconnect token separately', () => {
+      const room = service.createRoom(
+        'gm-socket',
+        1,
+        'GM',
+        undefined,
+        'gm-pid',
+      );
+      const token = service.issueGmReconnectToken(room.roomCode, 'gm-pid');
+
+      expect(
+        service.validateGmReconnectToken(room.roomCode, 'gm-pid', token),
+      ).toBe(true);
+      expect(
+        service.validateGmReconnectToken(
+          room.roomCode,
+          'gm-pid',
+          'wrong-token',
+        ),
+      ).toBe(false);
+      expect(
+        service.validateGmReconnectToken(room.roomCode, 'wrong-gm-pid', token),
+      ).toBe(false);
+    });
+
+    it('should not validate player reconnect tokens as GM reconnect tokens', () => {
+      const room = service.createRoom(
+        'gm-socket',
+        1,
+        'GM',
+        undefined,
+        'gm-pid',
+      );
+      const playerToken = service.issueReconnectToken(room.roomCode, 'gm-pid');
+
+      expect(
+        service.validateGmReconnectToken(room.roomCode, 'gm-pid', playerToken),
       ).toBe(false);
     });
   });

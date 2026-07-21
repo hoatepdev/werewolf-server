@@ -473,7 +473,10 @@ describe('Hunter Night-Death Feature', () => {
       // Make all players vote for the hunter (socket-p8) to trigger hunter path
       const alivePlayers = state.players.filter((p) => p.alive);
       alivePlayers.forEach((p) => {
-        phaseManager.handleVotingResponse(roomId, p.id, 'socket-p8');
+        phaseManager.handleVotingResponse(roomId, p.id, {
+          choice: 'target',
+          targetId: 'socket-p8',
+        });
       });
 
       const postVoteState = phaseManager.getGameStateForTest(roomId)!;
@@ -487,7 +490,10 @@ describe('Hunter Night-Death Feature', () => {
       const state = phaseManager.getGameStateForTest(roomId)!;
       const alivePlayers = state.players.filter((p) => p.alive);
       alivePlayers.forEach((p) => {
-        phaseManager.handleVotingResponse(roomId, p.id, 'socket-p8');
+        phaseManager.handleVotingResponse(roomId, p.id, {
+          choice: 'target',
+          targetId: 'socket-p8',
+        });
       });
 
       phaseManager.handleHunterDeathShoot(roomId, 'socket-p8', 'socket-p6');

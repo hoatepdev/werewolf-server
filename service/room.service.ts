@@ -1,15 +1,34 @@
 import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import { randomUUID } from 'crypto';
-import { Room, Player, Role } from '../types';
+import { Room, Player, Role, PushTokenRecord } from '../types';
 
 const ROOM_TTL_MS = 2 * 60 * 60 * 1000; // 2 hours
 const CLEANUP_INTERVAL_MS = 10 * 60 * 1000; // 10 minutes
 const MAX_ROOM_CODE_RETRIES = 100; // Prevent infinite loop
 
+export interface LeavePlayerResult {
+  success: boolean;
+  status:
+    | 'removed'
+    | 'left_active_game'
+    | 'not_in_room'
+    | 'room_not_found'
+    | 'invalid_participant';
+  player?: Player;
+  activeGame?: boolean;
+}
+
+export interface UpdatePlayerInfoResult {
+  success: boolean;
+  player?: Player;
+  status?: 'updated' | 'not_in_room' | 'room_not_found' | 'invalid_participant';
+}
+
 @Injectable()
 export class RoomService implements OnModuleDestroy {
   private rooms = new Map<string, Room>();
   private reconnectTokens = new Map<string, string>();
+  private gmReconnectTokens = new Map<string, string>();
   private readonly logger = new Logger(RoomService.name);
   private cleanupTimer: NodeJS.Timeout;
 
@@ -40,6 +59,9 @@ export class RoomService implements OnModuleDestroy {
         this.rooms.delete(code);
         for (const key of this.reconnectTokens.keys()) {
           if (key.startsWith(`${code}:`)) this.reconnectTokens.delete(key);
+        }
+        for (const key of this.gmReconnectTokens.keys()) {
+          if (key.startsWith(`${code}:`)) this.gmReconnectTokens.delete(key);
         }
         this.onRoomCleanup?.(code);
         cleaned++;
@@ -83,12 +105,24 @@ export class RoomService implements OnModuleDestroy {
     return !!room?.disconnectedGmId && room.hostId !== newSocketId;
   }
 
-  reconnectGm(roomCode: string, newSocketId: string): void {
+  reconnectGm(
+    roomCode: string,
+    newSocketId: string,
+    gmPersistentId?: string,
+  ): Player | null {
     const room = this.rooms.get(roomCode);
-    if (!room) return;
+    if (!room) return null;
+    if (gmPersistentId && room.gmPersistentId !== gmPersistentId) return null;
+
+    const gm = room.players.find((p) => p.status === 'gm');
+    if (!gm) return null;
+    if (gmPersistentId && gm.persistentId !== gmPersistentId) return null;
+
+    gm.id = newSocketId;
     room.hostId = newSocketId;
     room.disconnectedGmId = undefined;
     this.touchRoom(roomCode);
+    return gm;
   }
 
   setGmRoomId(roomCode: string, gmRoomId: string): void {
@@ -128,6 +162,7 @@ export class RoomService implements OnModuleDestroy {
     avatarKey: number,
     username: string,
     roomCodeParam?: string,
+    gmPersistentId?: string,
   ): Room {
     let roomCode: string;
     let retries = 0;
@@ -140,6 +175,7 @@ export class RoomService implements OnModuleDestroy {
     } while (this.rooms.has(roomCode));
     const gm: Player = {
       id,
+      persistentId: gmPersistentId,
       avatarKey,
       username,
       status: 'gm',
@@ -148,6 +184,7 @@ export class RoomService implements OnModuleDestroy {
       roomCode,
       hostId: id,
       players: [gm],
+      gmPersistentId,
       phase: 'night',
       round: 0,
       actions: [],
@@ -179,6 +216,36 @@ export class RoomService implements OnModuleDestroy {
     return (
       this.reconnectTokens.get(this.reconnectKey(roomCode, persistentId)) ===
       token
+    );
+  }
+
+  revokeReconnectToken(roomCode: string, persistentId?: string): void {
+    if (!persistentId) return;
+    this.reconnectTokens.delete(this.reconnectKey(roomCode, persistentId));
+  }
+
+  private gmReconnectKey(roomCode: string, gmPersistentId: string): string {
+    return `${roomCode}:${gmPersistentId}`;
+  }
+
+  issueGmReconnectToken(roomCode: string, gmPersistentId: string): string {
+    const token = randomUUID();
+    this.gmReconnectTokens.set(
+      this.gmReconnectKey(roomCode, gmPersistentId),
+      token,
+    );
+    return token;
+  }
+
+  validateGmReconnectToken(
+    roomCode: string,
+    gmPersistentId: string,
+    token: string,
+  ): boolean {
+    return (
+      this.gmReconnectTokens.get(
+        this.gmReconnectKey(roomCode, gmPersistentId),
+      ) === token
     );
   }
 
@@ -249,6 +316,189 @@ export class RoomService implements OnModuleDestroy {
   getPlayers(roomCode: string): Player[] {
     const room = this.rooms.get(roomCode);
     return room ? room.players : [];
+  }
+
+  registerPushToken(
+    roomCode: string,
+    participantId: string,
+    record: Omit<PushTokenRecord, 'enabledAt' | 'lastSeenAt'>,
+  ): 'registered' | 'updated' | 'not_found' {
+    const room = this.rooms.get(roomCode);
+    if (!room) return 'not_found';
+
+    const player = room.players.find(
+      (p) => p.id === participantId || p.persistentId === participantId,
+    );
+    if (!player || player.status === 'rejected') return 'not_found';
+    if (record.participantKind === 'gm' && player.status !== 'gm') {
+      return 'not_found';
+    }
+    if (record.participantKind === 'player' && player.status === 'gm') {
+      return 'not_found';
+    }
+
+    const now = Date.now();
+    player.pushTokens ??= [];
+    const existing = player.pushTokens.find(
+      (entry) => entry.deviceId === record.deviceId || entry.token === record.token,
+    );
+    if (existing) {
+      Object.assign(existing, record, {
+        enabledAt: existing.enabledAt,
+        lastSeenAt: now,
+      });
+      this.touchRoom(roomCode);
+      return 'updated';
+    }
+
+    player.pushTokens.push({ ...record, enabledAt: now, lastSeenAt: now });
+    this.touchRoom(roomCode);
+    return 'registered';
+  }
+
+  unregisterPushToken(
+    roomCode: string,
+    participantId: string,
+    token?: string,
+    deviceId?: string,
+  ): 'removed' | 'not_found' {
+    const room = this.rooms.get(roomCode);
+    if (!room) return 'not_found';
+    const player = room.players.find(
+      (p) => p.id === participantId || p.persistentId === participantId,
+    );
+    if (!player?.pushTokens) return 'not_found';
+
+    const before = player.pushTokens.length;
+    player.pushTokens = player.pushTokens.filter((entry) => {
+      if (token && entry.token === token) return false;
+      if (deviceId && entry.deviceId === deviceId) return false;
+      return true;
+    });
+    if (before === player.pushTokens.length) return 'not_found';
+    this.touchRoom(roomCode);
+    return 'removed';
+  }
+
+  getPushTokensForPlayers(roomCode: string, playerIds: string[]): string[] {
+    const room = this.rooms.get(roomCode);
+    if (!room) return [];
+    const targetIds = new Set(playerIds);
+    return room.players
+      .filter((player) => targetIds.has(player.id))
+      .flatMap((player) => player.pushTokens?.map((entry) => entry.token) ?? []);
+  }
+
+  getGmPushTokens(roomCode: string): string[] {
+    const room = this.rooms.get(roomCode);
+    if (!room) return [];
+    const gm = room.players.find((player) => player.status === 'gm');
+    return gm?.pushTokens?.map((entry) => entry.token) ?? [];
+  }
+
+  removeInvalidPushTokens(roomCode: string, tokens: string[]): void {
+    const room = this.rooms.get(roomCode);
+    if (!room || tokens.length === 0) return;
+    const invalid = new Set(tokens);
+    room.players.forEach((player) => {
+      player.pushTokens = player.pushTokens?.filter(
+        (entry) => !invalid.has(entry.token),
+      );
+    });
+    this.touchRoom(roomCode);
+  }
+
+  leavePlayer(roomCode: string, socketId: string): LeavePlayerResult {
+    const room = this.rooms.get(roomCode);
+    if (!room) return { success: false, status: 'room_not_found' };
+
+    if (room.hostId === socketId) {
+      return { success: false, status: 'invalid_participant' };
+    }
+
+    const playerIndex = room.players.findIndex((p) => p.id === socketId);
+    if (playerIndex === -1) {
+      return { success: false, status: 'not_in_room' };
+    }
+
+    const player = room.players[playerIndex];
+    if (player.status === 'gm') {
+      return { success: false, status: 'invalid_participant' };
+    }
+
+    this.revokeReconnectToken(roomCode, player.persistentId);
+    player.pushTokens = [];
+
+    if (room.gameStarted && player.status === 'approved') {
+      player.alive = false;
+      room.actions.push({
+        type: 'player_left',
+        playerId: player.id,
+        timestamp: Date.now(),
+      });
+      this.touchRoom(roomCode);
+      return {
+        success: true,
+        status: 'left_active_game',
+        player,
+        activeGame: true,
+      };
+    }
+
+    const [removedPlayer] = room.players.splice(playerIndex, 1);
+    this.touchRoom(roomCode);
+    return {
+      success: true,
+      status: 'removed',
+      player: removedPlayer,
+      activeGame: false,
+    };
+  }
+
+  updatePlayerInfo(
+    roomCode: string,
+    socketId: string,
+    username: string,
+    avatarKey: number,
+  ): UpdatePlayerInfoResult {
+    const room = this.rooms.get(roomCode);
+    if (!room) return { success: false, status: 'room_not_found' };
+
+    const player = room.players.find((p) => p.id === socketId);
+    if (!player || player.status === 'rejected') {
+      return { success: false, status: 'not_in_room' };
+    }
+
+    player.username = username;
+    player.avatarKey = avatarKey;
+    this.touchRoom(roomCode);
+    return { success: true, status: 'updated', player };
+  }
+
+  resetRoom(roomCode: string): Room | undefined {
+    const room = this.rooms.get(roomCode);
+    if (!room) return undefined;
+
+    room.gameStarted = false;
+    room.phase = 'night';
+    room.round = 0;
+    room.actions = [];
+    room.players = room.players
+      .filter((player) => player.status === 'gm' || player.status === 'approved')
+      .map((player) => {
+        if (player.status === 'gm') {
+          return player;
+        }
+        const resetPlayer: Player = {
+          ...player,
+          ready: false,
+          alive: undefined,
+          role: undefined,
+        };
+        return resetPlayer;
+      });
+    this.touchRoom(roomCode);
+    return room;
   }
 
   eliminatePlayer(
