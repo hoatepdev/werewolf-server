@@ -148,6 +148,73 @@ describe('PhaseManager Integration', () => {
       expect(state?.votes).toEqual({});
     });
 
+    it('should emit initial voting progress', () => {
+      phaseManager.startVotingPhase(roomId);
+
+      mockServer.expectEmitted('voting:progress', {
+        votedCount: 0,
+        totalVoters: 8,
+      });
+    });
+
+    it('should count abstain votes as voting progress without recording a target', () => {
+      phaseManager.startVotingPhase(roomId);
+      mockServer.reset();
+
+      phaseManager.handleVotingResponse(roomId, 'socket-p1', {
+        choice: 'abstain',
+        targetId: null,
+      });
+
+      const state = phaseManager.getGameStateForTest(roomId)!;
+      expect(state.actionsReceived?.has('socket-p1')).toBe(true);
+      expect(state.votes['socket-p1']).toBeUndefined();
+      mockServer.expectEmitted('voting:progress', {
+        votedCount: 1,
+        totalVoters: 8,
+      });
+    });
+
+    it('should not increment voting progress for duplicate votes', () => {
+      phaseManager.startVotingPhase(roomId);
+      phaseManager.handleVotingResponse(roomId, 'socket-p1', {
+        choice: 'abstain',
+        targetId: null,
+      });
+      mockServer.reset();
+
+      phaseManager.handleVotingResponse(roomId, 'socket-p1', {
+        choice: 'target',
+        targetId: 'socket-p7',
+      });
+
+      mockServer.expectNotEmitted('voting:progress');
+      const state = phaseManager.getGameStateForTest(roomId)!;
+      expect(state.actionsReceived?.size).toBe(1);
+      expect(state.votes['socket-p1']).toBeUndefined();
+    });
+
+    it('should resolve all abstain votes as no votes', () => {
+      phaseManager.startVotingPhase(roomId);
+
+      const state = phaseManager.getGameStateForTest(roomId)!;
+      const alivePlayers = state.players.filter((p) => p.alive);
+
+      alivePlayers.forEach((player) => {
+        phaseManager.handleVotingResponse(roomId, player.id, {
+          choice: 'abstain',
+          targetId: null,
+        });
+      });
+
+      mockServer.expectEmitted('votingResult', {
+        eliminatedPlayerId: null,
+        cause: 'no_votes',
+      });
+      expect(state.phase).toBe('conclude');
+      expect(Object.keys(state.votes)).toHaveLength(0);
+    });
+
     it('should record votes and trigger phase resolution when all players vote', () => {
       phaseManager.startVotingPhase(roomId);
 
@@ -165,7 +232,10 @@ describe('PhaseManager Integration', () => {
       // pick socket-p7 as the target so socket-p6 can also vote
       const target = 'socket-p7';
       alivePlayers.forEach((player) => {
-        phaseManager.handleVotingResponse(roomId, player.id, target);
+        phaseManager.handleVotingResponse(roomId, player.id, {
+          choice: 'target',
+          targetId: target,
+        });
       });
 
       // After all players vote, handleVoting resolves, resets voting state,
