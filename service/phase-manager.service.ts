@@ -1,7 +1,8 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Server } from 'socket.io';
-import { Phase, Player } from '../types';
+import { Phase, Player, PlayerSelfView } from '../types';
 import { RoomService } from './room.service';
+import { PushNotificationService } from './push-notification.service';
 import {
   GameEngine,
   GameState,
@@ -9,7 +10,101 @@ import {
   NightDeathResult,
   VotingResult,
   TimerInfo,
+  VotingChoice,
 } from './game-engine';
+
+type VotingResponseKind = 'target' | 'abstain' | 'timeout';
+
+export interface PlayerVotingState {
+  hasResponded: boolean;
+  choice: VotingChoice | null;
+  targetId: string | null;
+  targetName: string | null;
+}
+
+export interface VotingProgressPayload {
+  votedCount: number;
+  respondedCount: number;
+  totalVoters: number;
+}
+
+export interface VotingSubmissionAck {
+  success: boolean;
+  status: 'accepted' | 'duplicate' | 'rejected';
+  reason?: string;
+  message?: string;
+  votingState?: PlayerVotingState;
+  progress?: VotingProgressPayload;
+}
+
+export interface NightPromptSnapshot {
+  type: 'werewolf' | 'seer' | 'witch' | 'bodyguard' | 'hunter';
+  message: string;
+  candidates?: Array<{ id: string; username: string }>;
+  werewolves?: Array<{ id: string; username: string }>;
+  killedPlayerId?: string;
+  canHeal?: boolean;
+  canPoison?: boolean;
+  alivePlayerIds?: Array<{ id: string; username: string }>;
+  lastProtected?: string;
+}
+
+export interface PlayerStateSnapshot {
+  roomCode: string;
+  serverTime: number;
+  phase: Phase | null;
+  round: number;
+  gameStarted: boolean;
+  playerId: string;
+  role?: Player['role'];
+  alive: boolean | null;
+  players: PlayerSelfView[];
+  timer?: TimerInfo;
+  nightPrompt?: NightPromptSnapshot | null;
+  hunterDeathShooting?: boolean;
+  voting?: {
+    progress?: VotingProgressPayload;
+    state?: PlayerVotingState;
+    result?: VotingResultPayload;
+  };
+  winner?: 'villagers' | 'werewolves' | 'tanner';
+  gameLog?: GameState['gameLog'];
+}
+
+export interface GmStateSnapshot {
+  roomCode: string;
+  serverTime: number;
+  phase: Phase | null;
+  round: number;
+  gameStarted: boolean;
+  players: Player[];
+  timer?: TimerInfo;
+  gmActionLog: GameState['gmActionLog'];
+  winner?: 'villagers' | 'werewolves' | 'tanner';
+}
+
+interface VotingResultPayload {
+  round: number;
+  eliminatedPlayerId: string | null;
+  eliminatedPlayerName: string | null;
+  cause: 'vote' | 'hunter' | 'tie' | 'no_votes';
+  tiedPlayerIds?: string[];
+  tiedPlayers?: Array<{ id: string; username: string }>;
+  votes: Array<{
+    voterId: string;
+    voterName: string;
+    targetId: string | null;
+    targetName: string | null;
+    kind: VotingResponseKind;
+  }>;
+  totals: Array<{ targetId: string; targetName: string; count: number }>;
+  abstainCount: number;
+  timeoutCount: number;
+  targetVoteCount: number;
+  votedCount: number;
+  respondedCount: number;
+  totalVoters: number;
+}
 
 @Injectable()
 export class PhaseManager {
@@ -23,9 +118,15 @@ export class PhaseManager {
       responses: Array<{ playerId: string; payload: RoleResponse }>;
       responded: Set<string>;
       rolePlayers: Array<{ id: string; username: string; role?: string }>;
+      role: string;
+      event: string;
+      promptData: unknown;
+      deadline: number;
+      durationMs: number;
     }
   >();
   private transitionLocks = new Set<string>();
+  private roomGenerations = new Map<string, number>();
 
   private readonly ROLE_TIMEOUTS: Record<string, number> =
     process.env.NODE_ENV === 'test'
@@ -38,7 +139,10 @@ export class PhaseManager {
       timeout.unref?.();
     });
 
-  constructor(private readonly roomService: RoomService) {}
+  constructor(
+    private readonly roomService: RoomService,
+    private readonly pushNotificationService?: PushNotificationService,
+  ) {}
 
   setServer(server: Server) {
     this.server = server;
@@ -46,6 +150,20 @@ export class PhaseManager {
 
   private delay(ms: number) {
     return this.delayFn(ms);
+  }
+
+  private getRoomGeneration(roomId: string): number {
+    return this.roomGenerations.get(roomId) ?? 0;
+  }
+
+  private bumpRoomGeneration(roomId: string): number {
+    const next = this.getRoomGeneration(roomId) + 1;
+    this.roomGenerations.set(roomId, next);
+    return next;
+  }
+
+  private isCurrentGeneration(roomId: string, generation: number): boolean {
+    return this.getRoomGeneration(roomId) === generation;
   }
 
   /**
@@ -106,16 +224,220 @@ export class PhaseManager {
     return state?.timerInfo;
   }
 
+  getVotingProgress(roomId: string): VotingProgressPayload | undefined {
+    const state = this.gameStates.get(roomId);
+    if (!state || state.phase !== 'voting') return undefined;
+    return this.buildVotingProgress(state);
+  }
+
+  private serializePublicPlayer(player: Player): PlayerSelfView {
+    const {
+      persistentId: _persistentId,
+      role: _role,
+      pushTokens: _pushTokens,
+      ...publicPlayer
+    } = player;
+    return publicPlayer;
+  }
+
+  private serializePlayerForSocket(
+    player: Player,
+    socketId: string,
+  ): PlayerSelfView {
+    const publicPlayer = this.serializePublicPlayer(player);
+    if (player.id !== socketId || !player.role) return publicPlayer;
+    return { ...publicPlayer, role: player.role };
+  }
+
+  private serializePlayersForSocket(
+    players: Player[],
+    socketId: string,
+  ): PlayerSelfView[] {
+    return players.map((player) =>
+      this.serializePlayerForSocket(player, socketId),
+    );
+  }
+
   // --- Emit helpers ---
 
-  private emitToGM(gmRoomId: string, event: string, payload?: any): void {
+  private appendGmActionLog(roomId: string, event: string, payload?: any): void {
+    const typeByEvent: Record<
+      string,
+      GameState['gmActionLog'][number]['type']
+    > = {
+      'gm:nightAction': 'nightAction',
+      'gm:votingAction': 'votingAction',
+      'gm:hunterAction': 'hunterAction',
+      'gm:gameEnded': 'gameEnded',
+    };
+    const type = typeByEvent[event];
+    if (!type || typeof payload?.message !== 'string') return;
+
+    const state = this.gameStates.get(roomId);
+    if (!state) return;
+
+    state.gmActionLog.push({
+      type,
+      message: payload.message,
+      timestamp:
+        typeof payload.timestamp === 'number' ? payload.timestamp : Date.now(),
+      step: typeof payload.step === 'string' ? payload.step : undefined,
+      action: typeof payload.action === 'string' ? payload.action : undefined,
+      winner: payload.winner,
+    });
+
+    if (state.gmActionLog.length > 50) {
+      state.gmActionLog.splice(0, state.gmActionLog.length - 50);
+    }
+  }
+
+  private emitToGM(roomId: string, gmRoomId: string, event: string, payload?: any): void {
     if (gmRoomId) {
+      this.appendGmActionLog(roomId, event, payload);
       this.server.to(gmRoomId).emit(event, payload);
     }
   }
 
   private emitToAllPlayers(roomId: string, event: string, payload?: any): void {
     this.server.to(roomId).emit(event, payload);
+  }
+
+  private sendPush(
+    roomId: string,
+    tokens: string[],
+    title: string,
+    body: string,
+    data: Record<string, string | undefined>,
+  ): void {
+    if (!this.pushNotificationService || tokens.length === 0) return;
+
+    void this.pushNotificationService
+      .sendToTokens(tokens, { title, body, data })
+      .then(({ invalidTokens }) => {
+        if (invalidTokens.length > 0) {
+          this.roomService.removeInvalidPushTokens(roomId, invalidTokens);
+        }
+      })
+      .catch((error) => {
+        this.logger.warn(`Push notification failed: ${String(error)}`);
+      });
+  }
+
+  private notifyPlayers(
+    roomId: string,
+    playerIds: string[],
+    title: string,
+    body: string,
+    data: Record<string, string | undefined>,
+  ): void {
+    const tokens = this.roomService.getPushTokensForPlayers(roomId, playerIds);
+    this.sendPush(roomId, tokens, title, body, data);
+  }
+
+  private notifyGm(
+    roomId: string,
+    title: string,
+    body: string,
+    data: Record<string, string | undefined>,
+  ): void {
+    const tokens = this.roomService.getGmPushTokens(roomId);
+    this.sendPush(roomId, tokens, title, body, data);
+  }
+
+  private buildVotingProgress(state: GameState): VotingProgressPayload {
+    const respondedCount =
+      state.votingResponses?.size ?? state.actionsReceived?.size ?? 0;
+
+    return {
+      votedCount: respondedCount,
+      respondedCount,
+      totalVoters: state.players.filter((p) => p.alive).length,
+    };
+  }
+
+  private emitVotingProgress(roomId: string, state: GameState): void {
+    this.emitToAllPlayers(
+      roomId,
+      'voting:progress',
+      this.buildVotingProgress(state),
+    );
+  }
+
+  private buildVotingResultPayload(
+    state: GameState,
+    result: VotingResult,
+    voterIds: string[],
+  ): VotingResultPayload {
+    const alivePlayers = voterIds
+      .map((id) => state.players.find((player) => player.id === id))
+      .filter((player): player is Player => Boolean(player));
+    const voteEntries = alivePlayers.map((voter) => {
+      const response = state.votingResponses?.get(voter.id);
+      const targetId = response?.choice === 'target' ? response.targetId : null;
+      const kind: VotingResponseKind = response?.choice ?? 'timeout';
+      return {
+        voterId: voter.id,
+        voterName: voter.username,
+        targetId,
+        targetName: targetId ? this.resolveUsername(state, targetId) : null,
+        kind,
+      };
+    });
+
+    const totalsMap = new Map<string, number>();
+    Object.values(state.votes).forEach((targetId) => {
+      totalsMap.set(targetId, (totalsMap.get(targetId) ?? 0) + 1);
+    });
+
+    const totals = Array.from(totalsMap.entries())
+      .map(([targetId, count]) => ({
+        targetId,
+        targetName: this.resolveUsername(state, targetId) ?? targetId,
+        count,
+      }))
+      .sort((a, b) => b.count - a.count || a.targetName.localeCompare(b.targetName));
+
+    const respondedCount = voteEntries.filter(
+      (vote) => vote.kind !== 'timeout',
+    ).length;
+    const targetVoteCount = voteEntries.filter(
+      (vote) => vote.kind === 'target',
+    ).length;
+    const abstainCount = voteEntries.filter(
+      (vote) => vote.kind === 'abstain',
+    ).length;
+    const timeoutCount = voteEntries.filter(
+      (vote) => vote.kind === 'timeout',
+    ).length;
+    const totalVoters = alivePlayers.length;
+
+    return {
+      round: state.round,
+      eliminatedPlayerId: result.eliminatedPlayerId,
+      eliminatedPlayerName: this.resolveUsername(
+        state,
+        result.eliminatedPlayerId ?? undefined,
+      ),
+      cause: result.cause,
+      tiedPlayerIds: result.tiedPlayerIds,
+      tiedPlayers: result.tiedPlayerIds?.map((id) => ({
+        id,
+        username: this.resolveUsername(state, id) ?? id,
+      })),
+      votes: voteEntries,
+      totals,
+      abstainCount,
+      timeoutCount,
+      targetVoteCount,
+      votedCount: respondedCount,
+      respondedCount,
+      totalVoters,
+    };
+  }
+
+  private emitVotingResult(roomId: string, payload: VotingResultPayload): void {
+    this.emitToAllPlayers(roomId, 'voting:result', payload);
+    this.emitToAllPlayers(roomId, 'votingResult', payload);
   }
 
   // --- State sync ---
@@ -139,6 +461,111 @@ export class PhaseManager {
   ): string | null {
     if (!playerId) return null;
     return state.players.find((p) => p.id === playerId)?.username ?? null;
+  }
+
+  private buildPlayerVotingState(
+    state: GameState,
+    playerId: string,
+  ): PlayerVotingState {
+    const response = state.votingResponses?.get(playerId);
+    if (!response) {
+      return {
+        hasResponded: false,
+        choice: null,
+        targetId: null,
+        targetName: null,
+      };
+    }
+
+    return {
+      hasResponded: true,
+      choice: response.choice,
+      targetId: response.targetId,
+      targetName: response.targetId
+        ? this.resolveUsername(state, response.targetId)
+        : null,
+    };
+  }
+
+  getPlayerVotingState(
+    roomId: string,
+    playerId: string,
+  ): PlayerVotingState | undefined {
+    const state = this.gameStates.get(roomId);
+    if (!state || state.phase !== 'voting') return undefined;
+    return this.buildPlayerVotingState(state, playerId);
+  }
+
+  getPlayerStateSnapshot(
+    roomId: string,
+    playerId: string,
+  ): PlayerStateSnapshot | undefined {
+    const state = this.gameStates.get(roomId);
+    const room = this.roomService.getRoom(roomId);
+    if (!room) return undefined;
+
+    const roomPlayers = state?.players ?? room.players;
+    const player = roomPlayers.find((p) => p.id === playerId);
+    if (!player || player.status === 'rejected') return undefined;
+
+    const pending = this.pendingResponses.get(roomId);
+    const pendingForPlayer = pending?.rolePlayers.some((p) => p.id === playerId);
+    const hasResponded = pending?.responded.has(playerId) ?? false;
+    const nightPrompt =
+      pending && pendingForPlayer && !hasResponded
+        ? (pending.promptData as NightPromptSnapshot)
+        : null;
+
+    const snapshot: PlayerStateSnapshot = {
+      roomCode: roomId,
+      serverTime: Date.now(),
+      phase: state?.phase ?? room.phase,
+      round: state?.round ?? room.round,
+      gameStarted: room.gameStarted === true,
+      playerId,
+      role: player.role,
+      alive: player.alive ?? null,
+      players: this.serializePlayersForSocket(roomPlayers, playerId),
+      timer: state?.timerInfo,
+      nightPrompt,
+      hunterDeathShooting:
+        state?.hunterShooting === true &&
+        player.role === 'hunter' &&
+        player.alive === false,
+      winner: state?.winner,
+      gameLog: state?.winner ? state.gameLog : undefined,
+    };
+
+    if (state?.phase === 'voting') {
+      snapshot.voting = {
+        progress: this.buildVotingProgress(state),
+        state: this.buildPlayerVotingState(state, playerId),
+      };
+    } else if (state?.lastVotingResult) {
+      snapshot.voting = {
+        result: state.lastVotingResult as VotingResultPayload,
+      };
+    }
+
+    return snapshot;
+  }
+
+  getGmStateSnapshot(roomId: string): GmStateSnapshot | undefined {
+    const room = this.roomService.getRoom(roomId);
+    if (!room) return undefined;
+    const state = this.gameStates.get(roomId);
+
+    return {
+      roomCode: roomId,
+      serverTime: Date.now(),
+      phase: state?.phase ?? room.phase,
+      round: state?.round ?? room.round,
+      gameStarted: room.gameStarted === true,
+      players: state?.players ?? room.players,
+      timer: state?.timerInfo,
+      gmActionLog: state?.gmActionLog ?? [],
+      winner: state?.winner,
+    };
   }
 
   // --- Role action orchestration ---
@@ -198,7 +625,7 @@ export class PhaseManager {
         }
 
         if (state.gmRoomId) {
-          this.emitToGM(state.gmRoomId, 'gm:nightAction', {
+          this.emitToGM(roomId, state.gmRoomId, 'gm:nightAction', {
             step: role,
             action: 'timeout',
             message: `${GameEngine.getRoleDisplayName(role)} hết thời gian. Tự động bỏ qua.`,
@@ -218,7 +645,29 @@ export class PhaseManager {
         responses,
         responded,
         rolePlayers,
+        role,
+        event,
+        promptData: data,
+        deadline,
+        durationMs: timeoutMs,
       });
+
+      this.notifyPlayers(
+        roomId,
+        rolePlayers.map((player) => player.id),
+        `Đến lượt ${GameEngine.getRoleDisplayName(role)}`,
+        'Hãy mở game để thực hiện lượt trước khi hết giờ.',
+        {
+          type: 'night-role-prompt',
+          roomCode: roomId,
+          participantKind: 'player',
+          phase: 'night',
+          role,
+          deadline: String(deadline),
+          url: `/room/${roomId}`,
+          snapshotHint: 'request-on-open',
+        },
+      );
 
       // Emit both the action event and timer start to role players
       rolePlayers.forEach((player) => {
@@ -399,7 +848,7 @@ export class PhaseManager {
       const diedPlayerIds = result.deaths.map((d) => d.playerId);
 
       if (state.gmRoomId) {
-        this.emitToGM(state.gmRoomId, 'gm:nightAction', {
+        this.emitToGM(roomId, state.gmRoomId, 'gm:nightAction', {
           step: 'nightEnd',
           action: 'end',
           message: `Trời sáng rồi, mời mọi người thức dậy. ${
@@ -433,7 +882,7 @@ export class PhaseManager {
         state.hunterDeathContext = 'night';
 
         if (state.gmRoomId) {
-          this.emitToGM(state.gmRoomId, 'gm:hunterAction', {
+          this.emitToGM(roomId, state.gmRoomId, 'gm:hunterAction', {
             type: 'hunterDied',
             message: `Thợ săn đã chết trong đêm. Chờ thợ săn bắn hoặc bỏ qua.`,
           });
@@ -491,6 +940,21 @@ export class PhaseManager {
         this.emitToAllPlayers(roomId, 'game:hunterShoot', {
           hunterId: deadHunter.playerId,
         });
+        this.notifyPlayers(
+          roomId,
+          [deadHunter.playerId],
+          'Thợ săn, đến lượt bạn',
+          'Bạn đã chết. Hãy chọn người để bắn hoặc bỏ qua.',
+          {
+            type: 'hunter-shoot',
+            roomCode: roomId,
+            participantKind: 'player',
+            phase: state.phase ?? undefined,
+            role: 'hunter',
+            url: `/room/${roomId}`,
+            snapshotHint: 'request-on-open',
+          },
+        );
 
         return; // Phase blocked — wait for hunter's response
       }
@@ -543,8 +1007,11 @@ export class PhaseManager {
       GameEngine.resetNightState(state);
 
       // Use injectable delayFn for testability
+      const generation = this.getRoomGeneration(roomId);
       void this.delayFn(3000).then(() => {
-        this.startDayPhase(roomId);
+        if (this.isCurrentGeneration(roomId, generation)) {
+          this.startDayPhase(roomId);
+        }
       });
     }
   }
@@ -562,7 +1029,16 @@ export class PhaseManager {
     state.timerInfo = undefined;
     this.emitToAllPlayers(roomId, 'game:timerStop', {});
 
+    const voterIds = state.players
+      .filter((player) => player.alive)
+      .map((player) => player.id);
     const result: VotingResult = GameEngine.resolveVoting(state);
+    const votingResultPayload = this.buildVotingResultPayload(
+      state,
+      result,
+      voterIds,
+    );
+    state.lastVotingResult = votingResultPayload;
     this.syncPlayerStatus(roomId);
 
     // --- CAPTURE VOTING LOG (before reset) ---
@@ -586,6 +1062,7 @@ export class PhaseManager {
 
     // Tanner wins immediately
     if (result.isTanner) {
+      state.winner = 'tanner';
       state.gameLog.push({
         type: 'game_end',
         round: state.round,
@@ -602,8 +1079,30 @@ export class PhaseManager {
         players: state.players,
         gameLog: state.gameLog,
       });
+      this.notifyPlayers(
+        roomId,
+        state.players.map((player) => player.id),
+        'Ván Ma Sói đã kết thúc',
+        'Chán đời thắng!',
+        {
+          type: 'game-ended',
+          roomCode: roomId,
+          participantKind: 'player',
+          phase: 'ended',
+          url: `/room/${roomId}`,
+          snapshotHint: 'request-on-open',
+        },
+      );
+      this.notifyGm(roomId, 'Ván Ma Sói đã kết thúc', 'Chán đời thắng!', {
+        type: 'game-ended',
+        roomCode: roomId,
+        participantKind: 'gm',
+        phase: 'ended',
+        url: `/gm-room/${roomId}`,
+        snapshotHint: 'request-on-open',
+      });
       if (state.gmRoomId) {
-        this.emitToGM(state.gmRoomId, 'gm:gameEnded', {
+        this.emitToGM(roomId, state.gmRoomId, 'gm:gameEnded', {
           type: 'gameEnded',
           message: `Trò chơi kết thúc. Chán đời thắng khi bị vote chết!`,
           winner: 'tanner',
@@ -626,14 +1125,11 @@ export class PhaseManager {
         message = 'Không ai bỏ phiếu. Không ai bị loại.';
       }
 
-      this.emitToAllPlayers(roomId, 'votingResult', {
-        eliminatedPlayerId: null,
-        cause: result.cause,
-        tiedPlayerIds: result.tiedPlayerIds,
-      });
+      this.emitToAllPlayers(roomId, 'game:phaseChanged', { phase: 'conclude' });
+      this.emitVotingResult(roomId, votingResultPayload);
 
       if (state.gmRoomId) {
-        this.emitToGM(state.gmRoomId, 'gm:votingAction', {
+        this.emitToGM(roomId, state.gmRoomId, 'gm:votingAction', {
           type: 'votingAction',
           message,
         });
@@ -643,21 +1139,48 @@ export class PhaseManager {
 
       const winner = this.checkWinCondition(roomId);
       if (!winner) {
+        const generation = this.getRoomGeneration(roomId);
         void this.delayFn(3000).then(() => {
-          this.startNightPhase(roomId);
+          if (this.isCurrentGeneration(roomId, generation)) {
+            void this.startNightPhase(roomId);
+          }
         });
       }
       return;
     }
 
-    // Hunter voted out — wait for their shoot action
+    // Hunter voted out — show voting result publicly, then wait for their shoot action
     if (result.cause === 'hunter') {
+      state.phase = 'conclude';
       state.hunterShooting = true;
       state.hunterDeathContext = 'vote';
-      this.emitToAllPlayers(roomId, 'votingResult', {
-        eliminatedPlayerId: result.eliminatedPlayerId,
-        cause: 'hunter',
+      this.emitToAllPlayers(roomId, 'game:phaseChanged', { phase: 'conclude' });
+      this.emitVotingResult(roomId, votingResultPayload);
+      this.emitToAllPlayers(roomId, 'game:hunterShoot', {
+        hunterId: result.eliminatedPlayerId,
       });
+      this.notifyPlayers(
+        roomId,
+        [result.eliminatedPlayerId],
+        'Thợ săn, đến lượt bạn',
+        'Bạn đã bị loại. Hãy chọn người để bắn hoặc bỏ qua.',
+        {
+          type: 'hunter-shoot',
+          roomCode: roomId,
+          participantKind: 'player',
+          phase: state.phase ?? undefined,
+          role: 'hunter',
+          url: `/room/${roomId}`,
+          snapshotHint: 'request-on-open',
+        },
+      );
+      if (state.gmRoomId) {
+        this.emitToGM(roomId, state.gmRoomId, 'gm:hunterAction', {
+          type: 'hunterDied',
+          message: 'Thợ săn bị loại do bỏ phiếu. Chờ thợ săn bắn hoặc bỏ qua.',
+        });
+      }
+      GameEngine.resetVotingState(state);
       return;
     }
 
@@ -668,23 +1191,24 @@ export class PhaseManager {
     );
 
     if (state.gmRoomId) {
-      this.emitToGM(state.gmRoomId, 'gm:votingAction', {
+      this.emitToGM(roomId, state.gmRoomId, 'gm:votingAction', {
         type: 'votingAction',
         message: `Người chơi ${eliminated?.username} bị loại.`,
       });
     }
 
-    this.emitToAllPlayers(roomId, 'votingResult', {
-      eliminatedPlayerId: result.eliminatedPlayerId,
-      cause: 'vote',
-    });
+    this.emitToAllPlayers(roomId, 'game:phaseChanged', { phase: 'conclude' });
+    this.emitVotingResult(roomId, votingResultPayload);
 
     GameEngine.resetVotingState(state);
 
     const winner = this.checkWinCondition(roomId);
     if (!winner) {
+      const generation = this.getRoomGeneration(roomId);
       void this.delayFn(3000).then(() => {
-        this.startNightPhase(roomId);
+        if (this.isCurrentGeneration(roomId, generation)) {
+          void this.startNightPhase(roomId);
+        }
       });
     }
   }
@@ -693,6 +1217,7 @@ export class PhaseManager {
 
   async startNightPhase(roomId: string) {
     if (!this.acquireTransitionLock(roomId)) return;
+    const generation = this.getRoomGeneration(roomId);
 
     try {
       const state = this.gameStates.get(roomId);
@@ -704,7 +1229,7 @@ export class PhaseManager {
       });
 
       if (state.gmRoomId) {
-        this.emitToGM(state.gmRoomId, 'gm:nightAction', {
+        this.emitToGM(roomId, state.gmRoomId, 'gm:nightAction', {
           step: 'nightStart',
           action: 'start',
           message: 'Đêm đến, tất cả mọi người nhắm mắt lại.',
@@ -713,6 +1238,7 @@ export class PhaseManager {
       }
 
       await this.delay(2000);
+      if (!this.isCurrentGeneration(roomId, generation)) return;
 
       const roles = ['bodyguard', 'werewolf', 'witch', 'seer'];
 
@@ -724,7 +1250,7 @@ export class PhaseManager {
 
         // GM always sees role start (reads the script aloud)
         if (state.gmRoomId) {
-          this.emitToGM(state.gmRoomId, 'gm:nightAction', {
+          this.emitToGM(roomId, state.gmRoomId, 'gm:nightAction', {
             step: role,
             action: 'start',
             message: `Mời ${GameEngine.getRoleDisplayName(role)} thức dậy.`,
@@ -750,10 +1276,11 @@ export class PhaseManager {
           // Dead or absent role: simulate a fake delay (no events to players)
           await this.simulateDeadRoleAction();
         }
+        if (!this.isCurrentGeneration(roomId, generation)) return;
 
         // GM always sees role complete (reads "go back to sleep")
         if (state.gmRoomId) {
-          this.emitToGM(state.gmRoomId, 'gm:nightAction', {
+          this.emitToGM(roomId, state.gmRoomId, 'gm:nightAction', {
             step: role,
             action: 'complete',
             message: `${GameEngine.getRoleDisplayName(role)} đã hoàn thành. Vui lòng nhắm mắt lại.`,
@@ -777,7 +1304,7 @@ export class PhaseManager {
     this.emitToAllPlayers(roomId, 'game:phaseChanged', { phase: 'day' });
 
     if (state.gmRoomId) {
-      this.emitToGM(state.gmRoomId, 'gm:votingAction', {
+      this.emitToGM(roomId, state.gmRoomId, 'gm:votingAction', {
         type: 'phaseChanged',
         message: 'Mời cả làng bàn luận',
       });
@@ -792,7 +1319,9 @@ export class PhaseManager {
       if (!state) return;
 
       state.phase = 'voting';
+      state.lastVotingResult = undefined;
       state.actionsReceived = new Set();
+      state.votingResponses = new Map();
       state.votes = {};
       state.votingResolved = false;
       state.hunterShooting = false;
@@ -812,7 +1341,7 @@ export class PhaseManager {
         try {
           this.handleVoting(roomId);
           if (state.gmRoomId && state.phase !== 'ended') {
-            this.emitToGM(state.gmRoomId, 'gm:votingAction', {
+            this.emitToGM(roomId, state.gmRoomId, 'gm:votingAction', {
               type: 'votingEnded',
               message: 'Bỏ phiếu kết thúc.',
             });
@@ -826,7 +1355,7 @@ export class PhaseManager {
       }, votingDuration);
 
       if (state.gmRoomId) {
-        this.emitToGM(state.gmRoomId, 'gm:votingAction', {
+        this.emitToGM(roomId, state.gmRoomId, 'gm:votingAction', {
           type: 'phaseChanged',
           message:
             'Chuyển sang giai đoạn bỏ phiếu, các bạn có 45 giây để bỏ phiếu.',
@@ -843,6 +1372,39 @@ export class PhaseManager {
         durationMs: votingDuration,
         deadline,
       });
+
+      this.notifyPlayers(
+        roomId,
+        state.players.filter((player) => player.alive).map((player) => player.id),
+        'Đã đến lúc bỏ phiếu',
+        'Bạn có 45 giây để bỏ phiếu hoặc bỏ qua.',
+        {
+          type: 'voting-start',
+          roomCode: roomId,
+          participantKind: 'player',
+          phase: 'voting',
+          deadline: String(deadline),
+          url: `/room/${roomId}`,
+          snapshotHint: 'request-on-open',
+        },
+      );
+
+      this.notifyGm(
+        roomId,
+        'GM: bắt đầu bỏ phiếu',
+        'Người chơi có 45 giây để bỏ phiếu.',
+        {
+          type: 'gm-action',
+          roomCode: roomId,
+          participantKind: 'gm',
+          phase: 'voting',
+          deadline: String(deadline),
+          url: `/gm-room/${roomId}`,
+          snapshotHint: 'request-on-open',
+        },
+      );
+
+      this.emitVotingProgress(roomId, state);
     } catch (error) {
       this.logger.error(
         `Error starting voting phase for room ${roomId}`,
@@ -875,6 +1437,7 @@ export class PhaseManager {
 
     if (winner) {
       state.phase = 'ended';
+      state.winner = winner;
       this.syncPlayerStatus(roomId);
 
       // --- CAPTURE GAME END LOG ---
@@ -896,14 +1459,42 @@ export class PhaseManager {
         gameLog: state.gameLog,
       });
 
+      const winnerDisplayName =
+        winner === 'villagers'
+          ? 'Dân làng'
+          : winner === 'werewolves'
+            ? 'Sói'
+            : 'Chán đời';
+      this.notifyPlayers(
+        roomId,
+        state.players.map((player) => player.id),
+        'Ván Ma Sói đã kết thúc',
+        `${winnerDisplayName} thắng!`,
+        {
+          type: 'game-ended',
+          roomCode: roomId,
+          participantKind: 'player',
+          phase: 'ended',
+          url: `/room/${roomId}`,
+          snapshotHint: 'request-on-open',
+        },
+      );
+      this.notifyGm(
+        roomId,
+        'Ván Ma Sói đã kết thúc',
+        `${winnerDisplayName} thắng!`,
+        {
+          type: 'game-ended',
+          roomCode: roomId,
+          participantKind: 'gm',
+          phase: 'ended',
+          url: `/gm-room/${roomId}`,
+          snapshotHint: 'request-on-open',
+        },
+      );
+
       if (state.gmRoomId) {
-        const winnerDisplayName =
-          winner === 'villagers'
-            ? 'Dân làng'
-            : winner === 'werewolves'
-              ? 'Sói'
-              : 'Chán đời';
-        this.emitToGM(state.gmRoomId, 'gm:gameEnded', {
+        this.emitToGM(roomId, state.gmRoomId, 'gm:gameEnded', {
           type: 'gameEnded',
           message: `Trò chơi kết thúc. ${winnerDisplayName} thắng!`,
           winner,
@@ -938,25 +1529,75 @@ export class PhaseManager {
   handleVotingResponse(
     roomId: string,
     playerId: string,
-    targetId?: string | null,
-  ) {
+    payload: { targetId?: string | null; choice?: VotingChoice },
+  ): VotingSubmissionAck {
     const state = this.gameStates.get(roomId);
-    if (!state || state.phase !== 'voting') return;
-    // Prevent double-trigger: if voting already resolved, ignore
-    if (state.votingResolved) return;
+    if (!state || state.phase !== 'voting') {
+      return {
+        success: false,
+        status: 'rejected',
+        reason: 'not_voting',
+        message: 'Hiện không trong giai đoạn bỏ phiếu.',
+      };
+    }
+    if (state.votingResolved) {
+      return {
+        success: false,
+        status: 'rejected',
+        reason: 'resolved',
+        message: 'Bỏ phiếu đã kết thúc.',
+      };
+    }
 
-    GameEngine.recordVote(state, playerId, targetId);
+    const result = GameEngine.recordVote(
+      state,
+      playerId,
+      payload.targetId,
+      payload.choice,
+    );
+    const votingState = this.buildPlayerVotingState(state, playerId);
+    const progress = this.buildVotingProgress(state);
 
-    // Resolve early when every alive player has voted
+    if (result.status === 'rejected') {
+      return {
+        success: false,
+        status: 'rejected',
+        reason: result.reason,
+        message:
+          result.reason === 'invalid_target'
+            ? 'Mục tiêu bỏ phiếu không hợp lệ.'
+            : 'Không thể ghi nhận phiếu bầu.',
+        votingState,
+        progress,
+      };
+    }
+
+    this.server.to(playerId).emit('voting:state', votingState);
+
+    if (result.status === 'accepted') {
+      this.emitVotingProgress(roomId, state);
+    }
+
     const alivePlayers = state.players.filter((p) => p.alive);
-    const votedCount = state.actionsReceived?.size ?? 0;
-    if (votedCount >= alivePlayers.length) {
+    if (progress.respondedCount >= alivePlayers.length) {
       if (state.phaseTimeout) {
         clearTimeout(state.phaseTimeout);
         state.phaseTimeout = undefined;
       }
       this.handleVoting(roomId);
     }
+
+    return {
+      success: true,
+      status: result.status,
+      reason: result.reason,
+      message:
+        result.status === 'duplicate'
+          ? 'Phiếu của bạn đã được ghi nhận trước đó.'
+          : 'Đã ghi nhận phiếu bầu.',
+      votingState,
+      progress,
+    };
   }
 
   // --- Hunter ---
@@ -988,7 +1629,7 @@ export class PhaseManager {
     });
 
     if (state.gmRoomId) {
-      this.emitToGM(state.gmRoomId, 'gm:hunterAction', {
+      this.emitToGM(roomId, state.gmRoomId, 'gm:hunterAction', {
         type: 'hunterShot',
         message: `Thợ săn đã bắn ${target?.username}.`,
         targetId,
@@ -998,11 +1639,13 @@ export class PhaseManager {
     const winner = this.checkWinCondition(roomId);
     if (!winner) {
       const context = state.hunterDeathContext;
+      const generation = this.getRoomGeneration(roomId);
       state.hunterShooting = false;
       state.hunterDeathContext = undefined;
       void this.delayFn(3000).then(() => {
+        if (!this.isCurrentGeneration(roomId, generation)) return;
         if (context === 'night') {
-          void this.startDayPhase(roomId);
+          this.startDayPhase(roomId);
         } else {
           void this.startNightPhase(roomId);
         }
@@ -1050,7 +1693,7 @@ export class PhaseManager {
       });
 
       if (state.gmRoomId) {
-        this.emitToGM(state.gmRoomId, 'gm:hunterAction', {
+        this.emitToGM(roomId, state.gmRoomId, 'gm:hunterAction', {
           type: 'hunterSkipped',
           message: `Thợ săn đã bỏ qua lượt bắn.`,
         });
@@ -1059,12 +1702,14 @@ export class PhaseManager {
       const winner = this.checkWinCondition(roomId);
       if (!winner) {
         const context = state.hunterDeathContext;
+        const generation = this.getRoomGeneration(roomId);
         state.hunterShooting = false;
         state.hunterDeathContext = undefined;
         void this.delayFn(3000).then(
           () => {
+            if (!this.isCurrentGeneration(roomId, generation)) return;
             if (context === 'night') {
-              void this.startDayPhase(roomId);
+              this.startDayPhase(roomId);
             } else {
               void this.startNightPhase(roomId);
             }
@@ -1086,10 +1731,86 @@ export class PhaseManager {
     }
   }
 
-  /** Remove all in-memory state for a room (called when the room is cleaned up). */
-  cleanupRoom(roomId: string): void {
+  /** Sync an explicit player leave into the active GameState. */
+  handlePlayerLeave(roomId: string, playerId: string): void {
+    const state = this.gameStates.get(roomId);
+    if (!state) return;
+
+    const player = state.players.find((p) => p.id === playerId);
+    if (!player) return;
+
+    player.alive = false;
+
+    const pending = this.pendingResponses.get(roomId);
+    if (pending) {
+      const pendingPlayer = pending.rolePlayers.find((p) => p.id === playerId);
+      if (pendingPlayer && !pending.responded.has(playerId)) {
+        pending.responded.add(playerId);
+        pending.responses.push({
+          playerId,
+          payload: GameEngine.getDefaultRoleResponse(
+            state.currentNightStep ?? pendingPlayer.role ?? '',
+            state,
+          ),
+        });
+        if (pending.responded.size >= pending.rolePlayers.length) {
+          pending.resolve(pending.responses);
+          this.pendingResponses.delete(roomId);
+        }
+      }
+    }
+
+    if (state.hunterShooting && player.role === 'hunter') {
+      state.gameLog.push({
+        type: 'hunter_shot',
+        round: state.round,
+        hunter: player.username,
+        target: null,
+      });
+      state.hunterShooting = false;
+      state.hunterDeathContext = undefined;
+    }
+
+    this.syncPlayerStatus(roomId);
+    const winner = this.checkWinCondition(roomId);
+    if (winner) return;
+
+    if (state.phase === 'voting' && !state.votingResolved) {
+      this.emitVotingProgress(roomId, state);
+      const alivePlayers = state.players.filter((p) => p.alive);
+      const { respondedCount } = this.buildVotingProgress(state);
+      if (respondedCount >= alivePlayers.length) {
+        if (state.phaseTimeout) {
+          clearTimeout(state.phaseTimeout);
+          state.phaseTimeout = undefined;
+        }
+        this.handleVoting(roomId);
+      }
+    }
+  }
+
+  /** Mirror player profile changes into active GameState. */
+  updatePlayerInfo(
+    roomId: string,
+    playerId: string,
+    username: string,
+    avatarKey: number,
+  ): void {
+    const state = this.gameStates.get(roomId);
+    if (!state) return;
+    const player = state.players.find((p) => p.id === playerId);
+    if (!player) return;
+    player.username = username;
+    player.avatarKey = avatarKey;
+  }
+
+  private clearGameState(roomId: string): void {
     const state = this.gameStates.get(roomId);
     if (state?.phaseTimeout) clearTimeout(state.phaseTimeout);
+    if (state) {
+      state.timerInfo = undefined;
+      this.emitToAllPlayers(roomId, 'game:timerStop', {});
+    }
     this.gameStates.delete(roomId);
 
     const pending = this.pendingResponses.get(roomId);
@@ -1100,6 +1821,18 @@ export class PhaseManager {
     }
 
     this.releaseTransitionLock(roomId);
+  }
+
+  /** Remove active game state while preserving the room for replay. */
+  resetRoomState(roomId: string): void {
+    this.bumpRoomGeneration(roomId);
+    this.clearGameState(roomId);
+  }
+
+  /** Remove all in-memory state for a room (called when the room is cleaned up). */
+  cleanupRoom(roomId: string): void {
+    this.bumpRoomGeneration(roomId);
+    this.clearGameState(roomId);
   }
 
   // --- Init ---
@@ -1138,8 +1871,67 @@ export class PhaseManager {
       (p) =>
         (p as Player & { persistentId?: string }).persistentId === persistentId,
     );
-    if (player) {
-      player.id = newSocketId;
+    if (!player) return;
+
+    const oldSocketId = player.id;
+    player.id = newSocketId;
+
+    if (oldSocketId === newSocketId) return;
+
+    const pending = this.pendingResponses.get(roomId);
+    if (pending) {
+      pending.rolePlayers = pending.rolePlayers.map((rolePlayer) =>
+        rolePlayer.id === oldSocketId
+          ? { ...rolePlayer, id: newSocketId }
+          : rolePlayer,
+      );
+      if (pending.responded.has(oldSocketId)) {
+        pending.responded.delete(oldSocketId);
+        pending.responded.add(newSocketId);
+      }
+      pending.responses = pending.responses.map((response) =>
+        response.playerId === oldSocketId
+          ? { ...response, playerId: newSocketId }
+          : response,
+      );
     }
+
+    if (state.actionsReceived?.has(oldSocketId)) {
+      state.actionsReceived.delete(oldSocketId);
+      state.actionsReceived.add(newSocketId);
+    }
+
+    if (state.votes[oldSocketId]) {
+      state.votes[newSocketId] = state.votes[oldSocketId];
+      delete state.votes[oldSocketId];
+    }
+
+    Object.entries(state.votes).forEach(([voterId, targetId]) => {
+      if (targetId === oldSocketId) {
+        state.votes[voterId] = newSocketId;
+      }
+    });
+
+    if (state.votingResponses?.has(oldSocketId)) {
+      const response = state.votingResponses.get(oldSocketId);
+      state.votingResponses.delete(oldSocketId);
+      if (response) {
+        state.votingResponses.set(newSocketId, {
+          ...response,
+          voterId: newSocketId,
+          targetId:
+            response.targetId === oldSocketId ? newSocketId : response.targetId,
+        });
+      }
+    }
+
+    state.votingResponses?.forEach((response, voterId) => {
+      if (response.targetId === oldSocketId) {
+        state.votingResponses?.set(voterId, {
+          ...response,
+          targetId: newSocketId,
+        });
+      }
+    });
   }
 }

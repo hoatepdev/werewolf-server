@@ -6,6 +6,34 @@ export interface TimerInfo {
   deadline: number;
 }
 
+export type VotingChoice = 'target' | 'abstain';
+
+export interface VotingResponse {
+  voterId: string;
+  choice: VotingChoice;
+  targetId: string | null;
+  receivedAt: number;
+}
+
+export interface RecordVoteResult {
+  status: 'accepted' | 'duplicate' | 'rejected';
+  reason?:
+    | 'not_alive'
+    | 'already_responded'
+    | 'invalid_choice'
+    | 'invalid_target';
+  response?: VotingResponse;
+}
+
+export interface GmActionLogEntry {
+  type: 'nightAction' | 'votingAction' | 'hunterAction' | 'gameEnded';
+  message: string;
+  timestamp: number;
+  step?: string;
+  action?: string;
+  winner?: 'villagers' | 'werewolves' | 'tanner';
+}
+
 export interface GameState {
   phase: Phase | null;
   players: Player[];
@@ -19,6 +47,7 @@ export interface GameState {
     poisonTarget?: string;
   };
   votes: Record<string, string>;
+  votingResponses?: Map<string, VotingResponse>;
   hunterTarget?: string;
   lastProtected?: string;
   phaseTimeout?: NodeJS.Timeout;
@@ -31,6 +60,9 @@ export interface GameState {
   hunterDeathContext?: 'night' | 'vote';
   timerInfo?: TimerInfo;
   gameLog: GameLogEntry[];
+  gmActionLog: GmActionLogEntry[];
+  lastVotingResult?: unknown;
+  winner?: 'villagers' | 'werewolves' | 'tanner';
   round: number;
 }
 
@@ -133,6 +165,7 @@ export class GameEngine {
       lastProtected: undefined,
       gmRoomId,
       gameLog: [],
+      gmActionLog: [],
       round: 0,
     };
   }
@@ -340,20 +373,59 @@ export class GameEngine {
     state: GameState,
     playerId: string,
     targetId?: string | null,
-  ): void {
+    choice?: VotingChoice,
+  ): RecordVoteResult {
     if (!state.actionsReceived) {
       state.actionsReceived = new Set();
     }
-    // Dead players cannot vote
-    const voter = state.players.find((p) => p.id === playerId);
-    if (!voter?.alive) return;
-
-    if (!state.actionsReceived.has(playerId)) {
-      state.actionsReceived.add(playerId);
-      if (targetId && this.isAlivePlayer(state, targetId)) {
-        state.votes[playerId] = targetId;
-      }
+    if (!state.votingResponses) {
+      state.votingResponses = new Map();
     }
+
+    const voter = state.players.find((p) => p.id === playerId);
+    if (!voter?.alive) {
+      return { status: 'rejected', reason: 'not_alive' };
+    }
+
+    const existingResponse = state.votingResponses.get(playerId);
+    if (existingResponse || state.actionsReceived.has(playerId)) {
+      return {
+        status: 'duplicate',
+        reason: 'already_responded',
+        response: existingResponse ?? {
+          voterId: playerId,
+          choice: state.votes[playerId] ? 'target' : 'abstain',
+          targetId: state.votes[playerId] ?? null,
+          receivedAt: Date.now(),
+        },
+      };
+    }
+
+    const resolvedChoice: VotingChoice =
+      choice ?? (targetId ? 'target' : 'abstain');
+
+    if (resolvedChoice !== 'target' && resolvedChoice !== 'abstain') {
+      return { status: 'rejected', reason: 'invalid_choice' };
+    }
+
+    if (resolvedChoice === 'target' && (!targetId || !this.isAlivePlayer(state, targetId))) {
+      return { status: 'rejected', reason: 'invalid_target' };
+    }
+
+    const response: VotingResponse = {
+      voterId: playerId,
+      choice: resolvedChoice,
+      targetId: resolvedChoice === 'target' ? targetId! : null,
+      receivedAt: Date.now(),
+    };
+
+    state.actionsReceived.add(playerId);
+    state.votingResponses.set(playerId, response);
+    if (response.choice === 'target' && response.targetId) {
+      state.votes[playerId] = response.targetId;
+    }
+
+    return { status: 'accepted', response };
   }
 
   static resolveVoting(state: GameState): VotingResult {
@@ -481,6 +553,7 @@ export class GameEngine {
   static resetVotingState(state: GameState): void {
     state.votes = {};
     state.actionsReceived = new Set();
+    state.votingResponses = new Map();
     state.votingResolved = undefined;
     if (state.phaseTimeout) {
       clearTimeout(state.phaseTimeout);
