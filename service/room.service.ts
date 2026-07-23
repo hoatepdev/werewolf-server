@@ -1,6 +1,9 @@
 import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
-import { randomUUID } from 'crypto';
+import { randomInt, randomUUID } from 'crypto';
 import { Room, Player, Role, PushTokenRecord } from '../types';
+
+export const ROOM_CODE_LENGTH = 6;
+export const ROOM_CODE_PATTERN = /^\d{6}$/;
 
 const ROOM_TTL_MS = 2 * 60 * 60 * 1000; // 2 hours
 const CLEANUP_INTERVAL_MS = 10 * 60 * 1000; // 10 minutes
@@ -148,11 +151,14 @@ export class RoomService implements OnModuleDestroy {
     return this.rooms.get(roomCode)?.gameStarted === true;
   }
 
-  private static generateRoomCode(length = 12): string {
-    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+  static isValidRoomCode(roomCode: unknown): roomCode is string {
+    return typeof roomCode === 'string' && ROOM_CODE_PATTERN.test(roomCode);
+  }
+
+  private static generateRoomCode(length = ROOM_CODE_LENGTH): string {
     let code = '';
     for (let i = 0; i < length; i++) {
-      code += chars.charAt(Math.floor(Math.random() * chars.length));
+      code += randomInt(0, 10).toString();
     }
     return code;
   }
@@ -299,6 +305,7 @@ export class RoomService implements OnModuleDestroy {
       return false;
     }
     player.status = 'approved';
+    player.ready = false;
     this.logger.log(`Player ${player.username} approved in room ${roomCode}`);
 
     return true;
@@ -386,6 +393,35 @@ export class RoomService implements OnModuleDestroy {
     const targetIds = new Set(playerIds);
     return room.players
       .filter((player) => targetIds.has(player.id))
+      .flatMap((player) => player.pushTokens?.map((entry) => entry.token) ?? []);
+  }
+
+  getPushTokensForPlayer(
+    roomCode: string,
+    playerIdOrPersistentId: string,
+  ): string[] {
+    const room = this.rooms.get(roomCode);
+    if (!room) return [];
+    const player = room.players.find(
+      (p) => p.id === playerIdOrPersistentId || p.persistentId === playerIdOrPersistentId,
+    );
+    if (!player || player.status === 'gm') return [];
+    return player.pushTokens?.map((entry) => entry.token) ?? [];
+  }
+
+  getPushTokensForRoomPlayers(
+    roomCode: string,
+    options: { approvedOnly?: boolean; aliveOnly?: boolean } = {},
+  ): string[] {
+    const room = this.rooms.get(roomCode);
+    if (!room) return [];
+    return room.players
+      .filter((player) => {
+        if (player.status === 'gm') return false;
+        if (options.approvedOnly && player.status !== 'approved') return false;
+        if (options.aliveOnly && player.alive === false) return false;
+        return player.status !== 'rejected';
+      })
       .flatMap((player) => player.pushTokens?.map((entry) => entry.token) ?? []);
   }
 
@@ -576,6 +612,8 @@ export class RoomService implements OnModuleDestroy {
     }
     approvedPlayers.forEach((player, idx) => {
       player.role = shuffledRoles[idx];
+      player.ready = false;
+      player.alive = undefined;
     });
     room.phase = 'night';
     room.round = 1;
@@ -588,7 +626,7 @@ export class RoomService implements OnModuleDestroy {
     const room = this.rooms.get(roomCode);
     if (!room || room.gameStarted) return false;
     const player = room.players.find((p) => p.id === playerId);
-    if (!player || player.status !== 'approved') return false;
+    if (!player || player.status !== 'approved' || !player.role) return false;
 
     player.ready = true;
     player.alive = true;

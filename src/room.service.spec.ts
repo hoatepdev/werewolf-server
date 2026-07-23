@@ -45,13 +45,13 @@ describe('RoomService', () => {
     });
 
     it('should accept a custom room code', () => {
-      const room = service.createRoom('socket-1', 1, 'GM', 'CUSTOMCODE12');
+      const room = service.createRoom('socket-1', 1, 'GM', '123456');
 
-      expect(room.roomCode).toBe('CUSTOMCODE12');
+      expect(room.roomCode).toBe('123456');
     });
 
     it('should throw when room code collisions exceed max retries', () => {
-      const fixedCode = 'FIXEDCODE123';
+      const fixedCode = '111111';
       service.createRoom('socket-1', 1, 'GM', fixedCode);
 
       // Attempting to create another room with the same fixed code should throw
@@ -60,10 +60,10 @@ describe('RoomService', () => {
       }).toThrow('Unable to generate unique room code');
     });
 
-    it('should generate a 12-character alphanumeric room code', () => {
+    it('should generate a 6-digit numeric room code', () => {
       const room = service.createRoom('socket-1', 1, 'GM');
 
-      expect(room.roomCode).toMatch(/^[A-Z0-9]{12}$/);
+      expect(room.roomCode).toMatch(/^\d{6}$/);
     });
 
     it('should initialize room with phase=night and round=0', () => {
@@ -85,7 +85,7 @@ describe('RoomService', () => {
 
   describe('getRoom', () => {
     it('should return undefined for unknown room code', () => {
-      expect(service.getRoom('UNKNOWN123456')).toBeUndefined();
+      expect(service.getRoom('999999')).toBeUndefined();
     });
   });
 
@@ -152,7 +152,7 @@ describe('RoomService', () => {
 
     it('should return false for unknown room code', () => {
       const result = service.addPlayer(
-        'UNKNOWN123456',
+        '999999',
         makePlayer({ id: 'p1' }),
       );
       expect(result).toBe(false);
@@ -211,7 +211,7 @@ describe('RoomService', () => {
 
     it('should return null for unknown room code', () => {
       const player = service.rejoinPlayer(
-        'UNKNOWN123456',
+        '999999',
         'new-socket',
         'pid-1',
       );
@@ -238,6 +238,13 @@ describe('RoomService', () => {
       expect(player?.status).toBe('approved');
     });
 
+    it('should initialize approved player readiness to false', () => {
+      service.approvePlayer(roomCode, 'p1');
+
+      const player = service.getPlayers(roomCode).find((p) => p.id === 'p1');
+      expect(player?.ready).toBe(false);
+    });
+
     it('should return false for non-pending player', () => {
       service.approvePlayer(roomCode, 'p1'); // approve once
       const result = service.approvePlayer(roomCode, 'p1'); // approve again
@@ -246,7 +253,7 @@ describe('RoomService', () => {
     });
 
     it('should return false for unknown room', () => {
-      expect(service.approvePlayer('UNKNOWN123456', 'p1')).toBe(false);
+      expect(service.approvePlayer('999999', 'p1')).toBe(false);
     });
 
     it('should return false for unknown player', () => {
@@ -279,7 +286,7 @@ describe('RoomService', () => {
     });
 
     it('should return false for unknown room', () => {
-      expect(service.rejectPlayer('UNKNOWN123456', 'p1')).toBe(false);
+      expect(service.rejectPlayer('999999', 'p1')).toBe(false);
     });
   });
 
@@ -289,7 +296,13 @@ describe('RoomService', () => {
     let roomCode: string;
 
     beforeEach(() => {
-      const room = service.createRoom('gm-socket', 1, 'GM', undefined, 'gm-pid');
+      const room = service.createRoom(
+        'gm-socket',
+        1,
+        'GM',
+        undefined,
+        'gm-pid',
+      );
       roomCode = room.roomCode;
     });
 
@@ -302,9 +315,15 @@ describe('RoomService', () => {
 
       const result = service.leavePlayer(roomCode, 'p1');
 
-      expect(result).toEqual(expect.objectContaining({ success: true, status: 'removed' }));
-      expect(service.getPlayers(roomCode).some((p) => p.id === 'p1')).toBe(false);
-      expect(service.validateReconnectToken(roomCode, 'pid-1', token)).toBe(false);
+      expect(result).toEqual(
+        expect.objectContaining({ success: true, status: 'removed' }),
+      );
+      expect(service.getPlayers(roomCode).some((p) => p.id === 'p1')).toBe(
+        false,
+      );
+      expect(service.validateReconnectToken(roomCode, 'pid-1', token)).toBe(
+        false,
+      );
     });
 
     it('should remove an approved pre-game player who leaves', () => {
@@ -314,11 +333,16 @@ describe('RoomService', () => {
       const result = service.leavePlayer(roomCode, 'p1');
 
       expect(result.status).toBe('removed');
-      expect(service.getPlayers(roomCode).some((p) => p.id === 'p1')).toBe(false);
+      expect(service.getPlayers(roomCode).some((p) => p.id === 'p1')).toBe(
+        false,
+      );
     });
 
     it('should mark an active-game player dead without removing them', () => {
-      service.addPlayer(roomCode, makePlayer({ id: 'p1', persistentId: 'pid-1' }));
+      service.addPlayer(
+        roomCode,
+        makePlayer({ id: 'p1', persistentId: 'pid-1' }),
+      );
       service.approvePlayer(roomCode, 'p1');
       service.randomizeRoles(roomCode, ['werewolf']);
       service.playerReady(roomCode, 'p1');
@@ -331,7 +355,9 @@ describe('RoomService', () => {
       expect(player).toBeDefined();
       expect(player?.alive).toBe(false);
       expect(service.getRoom(roomCode)?.actions).toEqual(
-        expect.arrayContaining([expect.objectContaining({ type: 'player_left' })]),
+        expect.arrayContaining([
+          expect.objectContaining({ type: 'player_left' }),
+        ]),
       );
     });
 
@@ -347,7 +373,10 @@ describe('RoomService', () => {
     });
 
     it('should reset room for replay and preserve approved players', () => {
-      service.addPlayer(roomCode, makePlayer({ id: 'p1', persistentId: 'pid-1' }));
+      service.addPlayer(
+        roomCode,
+        makePlayer({ id: 'p1', persistentId: 'pid-1' }),
+      );
       service.addPlayer(roomCode, makePlayer({ id: 'pending' }));
       service.approvePlayer(roomCode, 'p1');
       service.randomizeRoles(roomCode, ['werewolf']);
@@ -401,7 +430,7 @@ describe('RoomService', () => {
     });
 
     it('should return false for unknown room', () => {
-      expect(service.eliminatePlayer('UNKNOWN123456', 'p1')).toBe(false);
+      expect(service.eliminatePlayer('999999', 'p1')).toBe(false);
     });
 
     it('should return false for unknown player id', () => {
@@ -440,7 +469,7 @@ describe('RoomService', () => {
     });
 
     it('should return false for unknown room', () => {
-      expect(service.revivePlayer('UNKNOWN123456', 'p1')).toBe(false);
+      expect(service.revivePlayer('999999', 'p1')).toBe(false);
     });
   });
 
@@ -492,7 +521,7 @@ describe('RoomService', () => {
     });
 
     it('should return false for unknown room', () => {
-      expect(service.randomizeRoles('UNKNOWN123456', testRoles)).toBe(false);
+      expect(service.randomizeRoles('999999', testRoles)).toBe(false);
     });
 
     it('should set room phase to night and round to 1 after randomization', () => {
@@ -501,6 +530,26 @@ describe('RoomService', () => {
 
       expect(room.phase).toBe('night');
       expect(room.round).toBe(1);
+    });
+
+    it('should reset stale readiness when roles are randomized', () => {
+      const players = service
+        .getPlayers(roomCode)
+        .filter((p) => p.status === 'approved');
+      players.forEach((player) => {
+        player.ready = true;
+        player.alive = true;
+      });
+
+      service.randomizeRoles(roomCode, testRoles);
+
+      const updatedPlayers = service
+        .getPlayers(roomCode)
+        .filter((p) => p.status === 'approved');
+      updatedPlayers.forEach((player) => {
+        expect(player.ready).toBe(false);
+        expect(player.alive).toBeUndefined();
+      });
     });
 
     it('should produce a valid permutation (all roles assigned exactly once)', () => {
@@ -539,33 +588,51 @@ describe('RoomService', () => {
       service.approvePlayer(roomCode, 'p2');
     });
 
-    it('should mark player as alive when ready', () => {
+    it('should not mark player ready before roles are assigned', () => {
+      const allReady = service.playerReady(roomCode, 'p1');
+      const player = service.getPlayers(roomCode).find((p) => p.id === 'p1');
+
+      expect(allReady).toBe(false);
+      expect(player?.ready).toBe(false);
+      expect(player?.alive).toBeUndefined();
+    });
+
+    it('should mark player as ready and alive after roles are assigned', () => {
+      service.randomizeRoles(roomCode, ['werewolf', 'seer']);
+
       service.playerReady(roomCode, 'p1');
       const player = service.getPlayers(roomCode).find((p) => p.id === 'p1');
+      expect(player?.ready).toBe(true);
       expect(player?.alive).toBe(true);
     });
 
     it('should return false when not all players are ready', () => {
+      service.randomizeRoles(roomCode, ['werewolf', 'seer']);
+
       const allReady = service.playerReady(roomCode, 'p1');
       expect(allReady).toBe(false);
     });
 
     it('should return true when all approved players are ready', () => {
+      service.randomizeRoles(roomCode, ['werewolf', 'seer']);
+
       service.playerReady(roomCode, 'p1');
       const allReady = service.playerReady(roomCode, 'p2');
       expect(allReady).toBe(true);
     });
 
     it('should return false for non-approved player', () => {
+      service.randomizeRoles(roomCode, ['werewolf', 'seer']);
       service.addPlayer(roomCode, makePlayer({ id: 'p3' }));
       expect(service.playerReady(roomCode, 'p3')).toBe(false);
     });
 
     it('should return false for unknown room', () => {
-      expect(service.playerReady('UNKNOWN123456', 'p1')).toBe(false);
+      expect(service.playerReady('999999', 'p1')).toBe(false);
     });
 
     it('should return false once the game has started', () => {
+      service.randomizeRoles(roomCode, ['werewolf', 'seer']);
       service.playerReady(roomCode, 'p1');
       expect(service.markGameStarted(roomCode)).toBe(true);
 
@@ -789,7 +856,7 @@ describe('RoomService', () => {
 
   describe('getPlayers', () => {
     it('should return empty array for unknown room', () => {
-      expect(service.getPlayers('UNKNOWN123456')).toEqual([]);
+      expect(service.getPlayers('999999')).toEqual([]);
     });
 
     it('should return all players including GM', () => {
