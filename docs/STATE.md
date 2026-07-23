@@ -2,59 +2,34 @@
 
 ## werewolf-server
 
-Last updated: 2025-01-21
+Last updated: 2026-07-23
 
 ## Current State
 
 ### Features
-- NestJS 11 WebSocket backend with Socket.IO
-- In-memory room management (no database)
-- Game phase orchestration with transition locks
-- Role-based action resolution (werewolf, seer, witch, hunter, bodyguard, tanner)
-- Win condition checking after each phase
-- Timer management for phase transitions
-- Firebase Admin SDK integration for push notifications
-- GM reconnection support with persistent IDs and tokens
-- Player serialization for security (role privacy)
-- Room cleanup after 2 hours of inactivity
-- Unit and integration tests with Jest
+- NestJS 11 Socket.IO backend with in-memory room and game state
+- Room codes are six-digit numeric values with centralized validation
+- Role engine supports villager, werewolf, seer, witch, hunter, bodyguard, tanner, and Cupid
+- Phase manager orchestrates first-night Cupid pairing, night role order, voting, hunter shots, and lover death cascades
+- Redacted in-progress game logs are serialized for players while hidden night details remain private until game end
+- GM eliminate/revive flows return structured acknowledgements and append GM log entries
+- Firebase push notifications cover player approval/rejection, room reset, day start, and GM phase prompts when configured
+- Reconnect flows sync state, timers, voting progress, push registration, and Cupid lover snapshots
+- Jest coverage tracks game-engine, gateway, and room-service behavior
 
 ### Recent Changes
-- Added Firebase Admin SDK (^14.2.0) for push notifications
-- Created PushNotificationService for token-based notifications
-- Added player serialization functions for security
-- Implemented GM reconnection with persistent IDs and tokens
-- Enhanced room serialization for socket-specific data
-- Updated tests for new serialization and notification features
-- Added comprehensive error handling for Firebase initialization
+- Added Cupid role, lover pairing, `night:cupid-action:done`, `night:cupid-linked`, and lover cascade deaths
+- Added redacted player game-log delivery during active game flows
+- Added lobby and phase push notifications plus token lookup/pruning helpers
+- Replaced alphanumeric room codes with six-digit numeric room codes
+- Reset stale readiness on approval/room reset and require assigned roles before readying
+- Added structured GM eliminate/revive acknowledgements and GM action logging
+- Restored voting progress on reconnect and expanded push registration authorization
 
 ### Technical Debt
-- In-memory state management (data lost on server restart)
-- No persistent storage for game history or analytics
-- Room cleanup could benefit from configurable timeframes
-- Some service methods could be extracted into smaller utilities
-
-### Architecture
-- `gateway/game.gateway.ts` - Main WebSocket gateway with event handlers
-- `service/room.service.ts` - Room CRUD and player management
-- `service/phase-manager.service.ts` - Phase transition orchestration
-- `service/game-engine.ts` - Pure utilities for game logic
-- `service/push-notification.service.ts` - Firebase push notifications
-- `types.ts` - Shared TypeScript types
-
-### Dependencies
-- NestJS 11.1.3
-- Socket.IO 4.8.1
-- Firebase Admin ^14.2.0
-- Jest for testing
-- dotenv for environment configuration
+- All room, lover, game-log, and push-token state remains in memory and is lost on restart
+- Six-digit room codes have a smaller collision space, mitigated by retry checks
+- Gateway remains a high-coupling integration surface
 
 ### Known Issues
-- Room state lost on server restart (by design for party game)
-- Firebase configuration optional; push disabled when not configured
-
-### Next Steps
-- Consider adding optional persistent storage for analytics
-- Add more comprehensive integration tests
-- Consider adding rate limiting for socket events
-- Monitor and optimize room cleanup intervals
+- Firebase configuration is optional; push notifications are disabled when not configured
