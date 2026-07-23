@@ -9,6 +9,12 @@ import { PushNotificationService } from '../service/push-notification.service';
 @Module({
   imports: [],
   controllers: [AppController],
-  providers: [AppService, GameGateway, RoomService, PhaseManager, PushNotificationService],
+  providers: [
+    AppService,
+    GameGateway,
+    RoomService,
+    PhaseManager,
+    PushNotificationService,
+  ],
 })
 export class AppModule {}
