@@ -34,7 +34,7 @@ function setServerMock(gateway: GameGateway) {
 
 function makeRoomWithSecretRoles() {
   return {
-    roomCode: 'ROOM123',
+    roomCode: '123456',
     hostId: 'gm-socket',
     gmRoomId: 'gm-room',
     gmPersistentId: 'gm-pid',
@@ -81,6 +81,7 @@ describe('GameGateway', () => {
   let gateway: GameGateway;
   let roomService: RoomService;
   let phaseManager: PhaseManager;
+  let pushNotificationService: { sendToTokens: jest.Mock };
 
   beforeEach(() => {
     // Mock server for emit calls
@@ -118,8 +119,15 @@ describe('GameGateway', () => {
       leavePlayer: jest.fn(),
       updatePlayerInfo: jest.fn(),
       resetRoom: jest.fn(),
+      getPushTokensForPlayer: jest.fn().mockReturnValue([]),
+      getPushTokensForRoomPlayers: jest.fn().mockReturnValue([]),
+      removeInvalidPushTokens: jest.fn(),
+      registerPushToken: jest.fn(),
+      unregisterPushToken: jest.fn(),
       revokeReconnectToken: jest.fn(),
       onModuleDestroy: jest.fn(),
+      getGmPushTokens: jest.fn().mockReturnValue([]),
+      getPushTokensForPlayers: jest.fn().mockReturnValue([]),
     } as unknown as RoomService;
 
     phaseManager = {
@@ -151,7 +159,15 @@ describe('GameGateway', () => {
       'gm-token',
     );
 
-    gateway = new GameGateway(roomService, phaseManager);
+    pushNotificationService = {
+      sendToTokens: jest.fn().mockResolvedValue({ sent: 0, invalidTokens: [] }),
+    };
+
+    gateway = new GameGateway(
+      roomService,
+      phaseManager,
+      pushNotificationService as any,
+    );
 
     // Simulate afterInit and set the server mock
     gateway.afterInit();
@@ -164,9 +180,9 @@ describe('GameGateway', () => {
       const { targets } = setServerMock(gateway);
       (roomService.getRoom as jest.Mock).mockReturnValue(room);
 
-      gateway['emitRoomPlayers']('ROOM123');
+      gateway['emitRoomPlayers']('123456');
 
-      const sharedPayload = targets.get('ROOM123')?.emit.mock.calls[0][1];
+      const sharedPayload = targets.get('123456')?.emit.mock.calls[0][1];
       expect(sharedPayload).toEqual([
         expect.not.objectContaining({ role: expect.any(String) }),
         expect.not.objectContaining({ role: expect.any(String) }),
@@ -177,6 +193,11 @@ describe('GameGateway', () => {
         expect.not.objectContaining({ persistentId: expect.any(String) }),
         expect.not.objectContaining({ persistentId: expect.any(String) }),
       ]);
+      expect(
+        sharedPayload.find(
+          (player: { id: string }) => player.id === 'player-1',
+        ),
+      ).toEqual(expect.objectContaining({ ready: true }));
     });
 
     it('still sends full player state to GM targets', () => {
@@ -184,7 +205,7 @@ describe('GameGateway', () => {
       const { targets } = setServerMock(gateway);
       (roomService.getRoom as jest.Mock).mockReturnValue(room);
 
-      gateway['emitRoomPlayers']('ROOM123');
+      gateway['emitRoomPlayers']('123456');
 
       expect(targets.get('gm-socket')?.emit).toHaveBeenCalledWith(
         'room:updatePlayers',
@@ -203,7 +224,7 @@ describe('GameGateway', () => {
       (roomService.getPlayers as jest.Mock).mockReturnValue(room.players);
 
       const result = gateway['handleGmGetPlayers'](socket, {
-        roomCode: 'ROOM123',
+        roomCode: '123456',
       });
 
       expect(result).toBe(room.players);
@@ -218,7 +239,7 @@ describe('GameGateway', () => {
       const room = makeRoomWithSecretRoles();
       (roomService.getRoom as jest.Mock).mockReturnValue(room);
 
-      gateway['handlePlayerGetPlayers'](socket, { roomCode: 'ROOM123' });
+      gateway['handlePlayerGetPlayers'](socket, { roomCode: '123456' });
 
       expect(roomService.getPlayers).not.toHaveBeenCalled();
       expect(socket.emit).toHaveBeenCalledWith('room:updatePlayersError', {
@@ -232,7 +253,7 @@ describe('GameGateway', () => {
       (roomService.getRoom as jest.Mock).mockReturnValue(room);
       (roomService.getPlayers as jest.Mock).mockReturnValue(room.players);
 
-      gateway['handlePlayerGetPlayers'](socket, { roomCode: 'ROOM123' });
+      gateway['handlePlayerGetPlayers'](socket, { roomCode: '123456' });
 
       const payload = (socket.emit as jest.Mock).mock.calls[0][1];
       expect(
@@ -261,7 +282,7 @@ describe('GameGateway', () => {
       (phaseManager.getTimerInfo as jest.Mock).mockReturnValue(undefined);
 
       await gateway['handleRejoinRoom'](socket, {
-        roomCode: 'ROOM123',
+        roomCode: '123456',
         persistentPlayerId: 'pid-1',
         reconnectToken: 'token-1',
       });
@@ -296,12 +317,12 @@ describe('GameGateway', () => {
       (roomService.approvePlayer as jest.Mock).mockReturnValue(true);
 
       gateway['handleApprovePlayer'](socket, {
-        roomCode: 'ROOM123',
+        roomCode: '123456',
         playerId: 'player-1',
       });
 
       const payload = targets.get('player-1')?.emit.mock.calls[0][1];
-      expect(payload).toEqual(expect.objectContaining({ roomCode: 'ROOM123' }));
+      expect(payload).toEqual(expect.objectContaining({ roomCode: '123456' }));
       expect(payload).toEqual(
         expect.not.objectContaining({ hostId: expect.any(String) }),
       );
@@ -335,19 +356,19 @@ describe('GameGateway', () => {
       });
 
       await gateway['handleConnectGmRoom'](socket, {
-        roomCode: 'ROOM123',
+        roomCode: '123456',
         gmRoomId: 'gm-room',
       });
 
-      expect(socket.join).toHaveBeenCalledWith('ROOM123');
+      expect(socket.join).toHaveBeenCalledWith('123456');
       expect(socket.join).toHaveBeenCalledWith('gm-room');
       expect(roomService.setGmRoomId).toHaveBeenCalledWith(
-        'ROOM123',
+        '123456',
         'gm-room',
       );
-      expect(phaseManager.setGmRoom).toHaveBeenCalledWith('ROOM123', 'gm-room');
+      expect(phaseManager.setGmRoom).toHaveBeenCalledWith('123456', 'gm-room');
       expect(socket.emit).toHaveBeenCalledWith('gm:connected', {
-        roomCode: 'ROOM123',
+        roomCode: '123456',
         gmRoomId: 'gm-room',
         message: 'GM connected successfully',
       });
@@ -381,34 +402,34 @@ describe('GameGateway', () => {
       (phaseManager.getTimerInfo as jest.Mock).mockReturnValue(undefined);
 
       await gateway['handleConnectGmRoom'](socket, {
-        roomCode: 'ROOM123',
+        roomCode: '123456',
         gmRoomId: 'gm-room-new',
         gmPersistentId: 'gm-pid',
         gmReconnectToken: 'gm-token',
       });
 
       expect(roomService.validateGmReconnectToken).toHaveBeenCalledWith(
-        'ROOM123',
+        '123456',
         'gm-pid',
         'gm-token',
       );
       expect(roomService.reconnectGm).toHaveBeenCalledWith(
-        'ROOM123',
+        '123456',
         'new-gm-socket',
         'gm-pid',
       );
-      expect(socket.join).toHaveBeenCalledWith('ROOM123');
+      expect(socket.join).toHaveBeenCalledWith('123456');
       expect(socket.join).toHaveBeenCalledWith('gm-room-new');
       expect(roomService.setGmRoomId).toHaveBeenCalledWith(
-        'ROOM123',
+        '123456',
         'gm-room-new',
       );
       expect(phaseManager.setGmRoom).toHaveBeenCalledWith(
-        'ROOM123',
+        '123456',
         'gm-room-new',
       );
       expect(socket.emit).toHaveBeenCalledWith('gm:connected', {
-        roomCode: 'ROOM123',
+        roomCode: '123456',
         gmRoomId: 'gm-room-new',
         message: 'GM connected successfully',
       });
@@ -421,7 +442,7 @@ describe('GameGateway', () => {
       (roomService.isGmReconnection as jest.Mock).mockReturnValue(true);
 
       await gateway['handleConnectGmRoom'](socket, {
-        roomCode: 'ROOM123',
+        roomCode: '123456',
         gmRoomId: 'gm-room',
       });
 
@@ -447,7 +468,7 @@ describe('GameGateway', () => {
       );
 
       await gateway['handleConnectGmRoom'](socket, {
-        roomCode: 'ROOM123',
+        roomCode: '123456',
         gmRoomId: 'gm-room',
         gmPersistentId: 'gm-pid',
         gmReconnectToken: 'wrong-token',
@@ -470,11 +491,11 @@ describe('GameGateway', () => {
         gmRoomId: 'gm-room',
       });
       await gateway['handleConnectGmRoom'](socket, {
-        roomCode: 'ROOM123',
+        roomCode: '123456',
         gmRoomId: '',
       });
       await gateway['handleConnectGmRoom'](socket, {
-        roomCode: 'ROOM123',
+        roomCode: '123456',
         gmRoomId: 'G'.repeat(51),
       });
 
@@ -489,7 +510,7 @@ describe('GameGateway', () => {
       (roomService.getRoom as jest.Mock).mockReturnValue(undefined);
 
       await gateway['handleConnectGmRoom'](socket, {
-        roomCode: 'ROOM123',
+        roomCode: '123456',
         gmRoomId: 'gm-room',
       });
 
@@ -536,19 +557,22 @@ describe('GameGateway', () => {
     it('should validate optional roomCode parameter', async () => {
       const socket = makeSocket('gm-socket');
 
-      const result1 = await gateway['handleCreateRoom'](socket, {
-        username: 'GM',
-        avatarKey: 1,
-        gmPersistentId: 'gm-pid',
-        roomCode: 'A'.repeat(21),
-      });
-      expect(result1).toEqual({
-        success: false,
-        message: 'Invalid room code.',
-      });
+      const invalidRoomCodes = ['', '12345', '1234567', 'ABC123'];
+      for (const roomCode of invalidRoomCodes) {
+        const result = await gateway['handleCreateRoom'](socket, {
+          username: 'GM',
+          avatarKey: 1,
+          gmPersistentId: 'gm-pid',
+          roomCode,
+        });
+        expect(result).toEqual({
+          success: false,
+          message: 'Invalid room code.',
+        });
+      }
 
       const mockRoom = {
-        roomCode: 'CUSTOM123456',
+        roomCode: '345678',
         hostId: 'gm-socket',
         gmPersistentId: 'gm-pid',
         players: [],
@@ -563,15 +587,15 @@ describe('GameGateway', () => {
         username: 'GM',
         avatarKey: 1,
         gmPersistentId: 'gm-pid',
-        roomCode: 'CUSTOM123456',
+        roomCode: '345678',
       });
-      expect((result2 as { roomCode?: string }).roomCode).toBe('CUSTOM123456');
+      expect((result2 as { roomCode?: string }).roomCode).toBe('345678');
     });
 
     it('should create room, issue a GM reconnect token, and join socket to room', async () => {
       const socket = makeSocket('gm-socket');
       const mockRoom = {
-        roomCode: 'ABCD12345678',
+        roomCode: '456789',
         hostId: 'gm-socket',
         gmPersistentId: 'gm-pid',
         players: [],
@@ -596,13 +620,13 @@ describe('GameGateway', () => {
         'gm-pid',
       );
       expect(roomService.issueGmReconnectToken).toHaveBeenCalledWith(
-        'ABCD12345678',
+        '456789',
         'gm-pid',
       );
-      expect(socket.join).toHaveBeenCalledWith('ABCD12345678');
+      expect(socket.join).toHaveBeenCalledWith('456789');
       expect(result).toEqual(
         expect.objectContaining({
-          roomCode: 'ABCD12345678',
+          roomCode: '456789',
           gmReconnectToken: 'gm-token',
         }),
       );
@@ -610,38 +634,32 @@ describe('GameGateway', () => {
   });
 
   describe('rq_player:joinRoom', () => {
-    it('should validate room code is non-empty and within length limit', async () => {
+    it('should validate room code is exactly 6 digits', async () => {
       const socket = makeSocket('player-socket');
 
-      // Empty room code should fail
-      const result1 = await gateway['handleJoinRoom'](socket, {
-        roomCode: '',
-        avatarKey: 1,
-        username: 'Player',
-      });
-      expect(result1.success).toBe(false);
-
-      // Room code over 20 chars should fail
-      const result2 = await gateway['handleJoinRoom'](socket, {
-        roomCode: 'A'.repeat(21),
-        avatarKey: 1,
-        username: 'Player',
-      });
-      expect(result2.success).toBe(false);
+      const invalidRoomCodes = ['', '12345', '1234567', 'ABC123'];
+      for (const roomCode of invalidRoomCodes) {
+        const result = await gateway['handleJoinRoom'](socket, {
+          roomCode,
+          avatarKey: 1,
+          username: 'Player',
+        });
+        expect(result.success).toBe(false);
+      }
     });
 
     it('should validate username and avatarKey', async () => {
       const socket = makeSocket('player-socket');
 
       const result1 = await gateway['handleJoinRoom'](socket, {
-        roomCode: 'VALIDROOM1234',
+        roomCode: '234567',
         avatarKey: 1,
         username: '', // empty
       });
       expect(result1.success).toBe(false);
 
       const result2 = await gateway['handleJoinRoom'](socket, {
-        roomCode: 'VALIDROOM1234',
+        roomCode: '234567',
         avatarKey: 'not-a-number' as any,
         username: 'Player',
       });
@@ -653,7 +671,7 @@ describe('GameGateway', () => {
       (roomService.addPlayer as jest.Mock).mockReturnValue(false);
 
       const result = await gateway['handleJoinRoom'](socket, {
-        roomCode: 'VALIDROOM1234',
+        roomCode: '234567',
         avatarKey: 1,
         username: 'Player',
       });
@@ -665,7 +683,7 @@ describe('GameGateway', () => {
     it('should add player, join socket room, and emit update on success', async () => {
       const socket = makeSocket('player-socket');
       const mockRoom = {
-        roomCode: 'VALIDROOM1234',
+        roomCode: '234567',
         hostId: 'gm-socket',
         players: [],
         phase: 'night' as const,
@@ -677,15 +695,15 @@ describe('GameGateway', () => {
       (roomService.addPlayer as jest.Mock).mockReturnValue(true);
 
       const result = await gateway['handleJoinRoom'](socket, {
-        roomCode: 'VALIDROOM1234',
+        roomCode: '234567',
         avatarKey: 1,
         username: 'Player',
       });
 
       expect(result.success).toBe(true);
-      expect(socket.join).toHaveBeenCalledWith('VALIDROOM1234');
+      expect(socket.join).toHaveBeenCalledWith('234567');
       expect(roomService.addPlayer).toHaveBeenCalledWith(
-        'VALIDROOM1234',
+        '234567',
         expect.objectContaining({
           id: 'player-socket',
           username: 'Player',
@@ -709,7 +727,7 @@ describe('GameGateway', () => {
 
       // Empty persistentId
       await gateway['handleRejoinRoom'](socket, {
-        roomCode: 'VALIDROOM1234',
+        roomCode: '234567',
         persistentPlayerId: '',
         reconnectToken: 'token-1',
       });
@@ -737,27 +755,27 @@ describe('GameGateway', () => {
       });
 
       await gateway['handleRejoinRoom'](socket, {
-        roomCode: 'VALIDROOM1234',
+        roomCode: '234567',
         persistentPlayerId: 'pid-1',
         reconnectToken: 'token-1',
       });
 
       expect(roomService.validateReconnectToken).toHaveBeenCalledWith(
-        'VALIDROOM1234',
+        '234567',
         'pid-1',
         'token-1',
       );
       expect(roomService.rejoinPlayer).toHaveBeenCalledWith(
-        'VALIDROOM1234',
+        '234567',
         'new-socket',
         'pid-1',
       );
       expect(phaseManager.updatePlayerSocketId).toHaveBeenCalledWith(
-        'VALIDROOM1234',
+        '234567',
         'pid-1',
         'new-socket',
       );
-      expect(socket.join).toHaveBeenCalledWith('VALIDROOM1234');
+      expect(socket.join).toHaveBeenCalledWith('234567');
       expect(socket.emit).toHaveBeenCalledWith(
         'player:rejoined',
         expect.any(Object),
@@ -781,12 +799,19 @@ describe('GameGateway', () => {
         player: room.players[1],
       });
 
-      const result = await gateway['handleLeaveRoom'](socket, { roomCode: 'ROOM123' });
+      const result = await gateway['handleLeaveRoom'](socket, {
+        roomCode: '123456',
+      });
 
-      expect(roomService.leavePlayer).toHaveBeenCalledWith('ROOM123', 'player-1');
+      expect(roomService.leavePlayer).toHaveBeenCalledWith(
+        '123456',
+        'player-1',
+      );
       expect(phaseManager.handlePlayerLeave).not.toHaveBeenCalled();
-      expect(socket.leave).toHaveBeenCalledWith('ROOM123');
-      expect(result).toEqual(expect.objectContaining({ success: true, status: 'removed' }));
+      expect(socket.leave).toHaveBeenCalledWith('123456');
+      expect(result).toEqual(
+        expect.objectContaining({ success: true, status: 'removed' }),
+      );
     });
 
     it('should sync active-game player leave into phase manager', async () => {
@@ -800,10 +825,10 @@ describe('GameGateway', () => {
         player: room.players[1],
       });
 
-      await gateway['handleLeaveRoom'](socket, { roomCode: 'ROOM123' });
+      await gateway['handleLeaveRoom'](socket, { roomCode: '123456' });
 
       expect(phaseManager.handlePlayerLeave).toHaveBeenCalledWith(
-        'ROOM123',
+        '123456',
         'player-1',
       );
     });
@@ -819,19 +844,19 @@ describe('GameGateway', () => {
       });
 
       const result = gateway['handleUpdateInfo'](socket, {
-        roomCode: 'ROOM123',
+        roomCode: '123456',
         username: 'Tên mới',
         avatarKey: 9,
       });
 
       expect(roomService.updatePlayerInfo).toHaveBeenCalledWith(
-        'ROOM123',
+        '123456',
         'player-1',
         'Tên mới',
         9,
       );
       expect(phaseManager.updatePlayerInfo).toHaveBeenCalledWith(
-        'ROOM123',
+        '123456',
         'player-1',
         'Tên mới',
         9,
@@ -851,11 +876,15 @@ describe('GameGateway', () => {
       });
       (phaseManager.getPhase as jest.Mock).mockReturnValue('ended');
 
-      const result = gateway['handleResetRoom'](socket, { roomCode: 'ROOM123' });
+      const result = gateway['handleResetRoom'](socket, {
+        roomCode: '123456',
+      });
 
-      expect(phaseManager.resetRoomState).toHaveBeenCalledWith('ROOM123');
-      expect(roomService.resetRoom).toHaveBeenCalledWith('ROOM123');
-      expect(result).toEqual(expect.objectContaining({ success: true, phase: 'night' }));
+      expect(phaseManager.resetRoomState).toHaveBeenCalledWith('123456');
+      expect(roomService.resetRoom).toHaveBeenCalledWith('123456');
+      expect(result).toEqual(
+        expect.objectContaining({ success: true, phase: 'night' }),
+      );
     });
   });
 
@@ -873,7 +902,7 @@ describe('GameGateway', () => {
       (roomService.getRoom as jest.Mock).mockReturnValue(mockRoom);
 
       gateway['handleApprovePlayer'](socket, {
-        roomCode: 'ROOM123',
+        roomCode: '123456',
         playerId: 'player-1',
       });
 
@@ -901,7 +930,7 @@ describe('GameGateway', () => {
 
       // Empty playerId
       gateway['handleApprovePlayer'](socket, {
-        roomCode: 'ROOM123',
+        roomCode: '123456',
         playerId: '',
       });
       expect(roomService.approvePlayer).not.toHaveBeenCalled();
@@ -921,12 +950,12 @@ describe('GameGateway', () => {
       (roomService.approvePlayer as jest.Mock).mockReturnValue(true);
 
       gateway['handleApprovePlayer'](socket, {
-        roomCode: 'ROOM123',
+        roomCode: '123456',
         playerId: 'player-1',
       });
 
       expect(roomService.approvePlayer).toHaveBeenCalledWith(
-        'ROOM123',
+        '123456',
         'player-1',
       );
     });
@@ -946,7 +975,7 @@ describe('GameGateway', () => {
       (roomService.getRoom as jest.Mock).mockReturnValue(mockRoom);
 
       gateway['handleRejectPlayer'](socket, {
-        roomCode: 'ROOM123',
+        roomCode: '123456',
         playerId: 'player-1',
       });
 
@@ -969,12 +998,12 @@ describe('GameGateway', () => {
       (roomService.rejectPlayer as jest.Mock).mockReturnValue(true);
 
       gateway['handleRejectPlayer'](socket, {
-        roomCode: 'ROOM123',
+        roomCode: '123456',
         playerId: 'player-1',
       });
 
       expect(roomService.rejectPlayer).toHaveBeenCalledWith(
-        'ROOM123',
+        '123456',
         'player-1',
       );
     });
@@ -1002,7 +1031,7 @@ describe('GameGateway', () => {
 
       // Invalid roles array (not an array)
       const result2 = gateway['handleRandomizeRoles'](socket, {
-        roomCode: 'ROOM123',
+        roomCode: '123456',
         roles: 'not-array' as any,
       });
       expect(result2).toBe('Invalid data.');
@@ -1021,7 +1050,7 @@ describe('GameGateway', () => {
       (roomService.getRoom as jest.Mock).mockReturnValue(mockRoom);
 
       const result = gateway['handleRandomizeRoles'](socket, {
-        roomCode: 'ROOM123',
+        roomCode: '123456',
         roles: ['werewolf'],
       });
 
@@ -1044,7 +1073,7 @@ describe('GameGateway', () => {
       (roomService.getRoom as jest.Mock).mockReturnValue(mockRoom);
 
       const result = gateway['handleRandomizeRoles'](socket, {
-        roomCode: 'ROOM123',
+        roomCode: '123456',
         roles: ['villager', 'seer'],
       });
 
@@ -1064,11 +1093,36 @@ describe('GameGateway', () => {
       (roomService.getRoom as jest.Mock).mockReturnValue(mockRoom);
 
       const result = gateway['handleRandomizeRoles'](socket, {
-        roomCode: 'ROOM123',
+        roomCode: '123456',
         roles: ['invalid-role' as Role],
       });
 
       expect(result).toBe('Invalid roles provided');
+    });
+
+    it('should accept cupid in randomized roles', () => {
+      const socket = makeSocket('gm-socket');
+      const mockRoom = {
+        hostId: 'gm-socket',
+        players: [],
+        phase: 'night' as const,
+        round: 0,
+        actions: [],
+        lastActivityAt: Date.now(),
+      };
+      (roomService.getRoom as jest.Mock).mockReturnValue(mockRoom);
+      (roomService.randomizeRoles as jest.Mock).mockReturnValue(true);
+
+      const result = gateway['handleRandomizeRoles'](socket, {
+        roomCode: '123456',
+        roles: ['werewolf', 'cupid'],
+      });
+
+      expect(roomService.randomizeRoles).toHaveBeenCalledWith('123456', [
+        'werewolf',
+        'cupid',
+      ]);
+      expect(result).toBe('');
     });
 
     it('should randomize roles and emit to each approved player', () => {
@@ -1106,15 +1160,107 @@ describe('GameGateway', () => {
       } as any;
 
       const result = gateway['handleRandomizeRoles'](socket, {
-        roomCode: 'ROOM123',
+        roomCode: '123456',
         roles: ['werewolf', 'seer'],
       });
 
-      expect(roomService.randomizeRoles).toHaveBeenCalledWith('ROOM123', [
+      expect(roomService.randomizeRoles).toHaveBeenCalledWith('123456', [
         'werewolf',
         'seer',
       ]);
       expect(result).toBe('');
+    });
+  });
+
+  describe('rq_player:ready', () => {
+    it('should broadcast player updates without starting game until all players are ready', () => {
+      const socket = makeSocket('player-1');
+      const room = {
+        ...makeRoomWithSecretRoles(),
+        gameStarted: false,
+        players: makeRoomWithSecretRoles().players.map((player) =>
+          player.id === 'player-2' ? { ...player, ready: false } : player,
+        ),
+      };
+      const { targets } = setServerMock(gateway);
+      (roomService.getRoom as jest.Mock).mockReturnValue(room);
+      (roomService.playerReady as jest.Mock).mockReturnValue(false);
+
+      gateway['handlePlayerReady'](socket, { roomCode: '123456' });
+
+      expect(roomService.playerReady).toHaveBeenCalledWith(
+        '123456',
+        'player-1',
+      );
+      expect(targets.get('123456')?.emit).toHaveBeenCalledWith(
+        'room:updatePlayers',
+        expect.any(Array),
+      );
+      expect(socket.emit).toHaveBeenCalledWith('player:readySuccess', {
+        roomCode: '123456',
+      });
+      expect(roomService.markGameStarted).not.toHaveBeenCalled();
+      expect(phaseManager.initGameState).not.toHaveBeenCalled();
+      expect(targets.get('123456')?.emit).not.toHaveBeenCalledWith(
+        'room:readySuccess',
+      );
+    });
+
+    it('should mark game started, initialize phase state, then emit ready success when all players are ready', () => {
+      const socket = makeSocket('player-1');
+      const room = { ...makeRoomWithSecretRoles(), gameStarted: false };
+      const { targets } = setServerMock(gateway);
+      (roomService.getRoom as jest.Mock).mockReturnValue(room);
+      (roomService.playerReady as jest.Mock).mockReturnValue(true);
+      (roomService.markGameStarted as jest.Mock).mockReturnValue(true);
+      (roomService.getGmRoomId as jest.Mock).mockReturnValue('gm-room');
+
+      gateway['handlePlayerReady'](socket, { roomCode: '123456' });
+
+      expect(roomService.markGameStarted).toHaveBeenCalledWith('123456');
+      expect(phaseManager.initGameState).toHaveBeenCalledWith(
+        '123456',
+        room.players.filter((player) => player.status === 'approved'),
+        'gm-room',
+      );
+      expect(targets.get('123456')?.emit).toHaveBeenCalledWith(
+        'room:readySuccess',
+      );
+      const readySuccessCallOrder = targets
+        .get('123456')
+        ?.emit.mock.calls.findIndex(([event]) => event === 'room:readySuccess');
+      expect(readySuccessCallOrder).toBeGreaterThan(-1);
+      expect(
+        (roomService.markGameStarted as jest.Mock).mock.invocationCallOrder[0],
+      ).toBeLessThan(
+        targets.get('123456')!.emit.mock.invocationCallOrder[
+          readySuccessCallOrder!
+        ],
+      );
+      expect(
+        (phaseManager.initGameState as jest.Mock).mock.invocationCallOrder[0],
+      ).toBeLessThan(
+        targets.get('123456')!.emit.mock.invocationCallOrder[
+          readySuccessCallOrder!
+        ],
+      );
+    });
+
+    it('should not emit room ready success when marking game started fails', () => {
+      const socket = makeSocket('player-1');
+      const room = { ...makeRoomWithSecretRoles(), gameStarted: false };
+      const { targets } = setServerMock(gateway);
+      (roomService.getRoom as jest.Mock).mockReturnValue(room);
+      (roomService.playerReady as jest.Mock).mockReturnValue(true);
+      (roomService.markGameStarted as jest.Mock).mockReturnValue(false);
+
+      gateway['handlePlayerReady'](socket, { roomCode: '123456' });
+
+      expect(roomService.markGameStarted).toHaveBeenCalledWith('123456');
+      expect(phaseManager.initGameState).not.toHaveBeenCalled();
+      expect(targets.get('123456')?.emit).not.toHaveBeenCalledWith(
+        'room:readySuccess',
+      );
     });
   });
 
@@ -1142,7 +1288,7 @@ describe('GameGateway', () => {
     it('should reject non-host sockets', () => {
       const socket = makeSocket('player-socket');
 
-      gateway['handleNextPhase'](socket, { roomCode: 'ROOM123' });
+      gateway['handleNextPhase'](socket, { roomCode: '123456' });
 
       expect(phaseManager.getPhase).not.toHaveBeenCalled();
       expect(socket.emit).toHaveBeenCalledWith('room:phaseError', {
@@ -1155,13 +1301,13 @@ describe('GameGateway', () => {
       (phaseManager.getPhase as jest.Mock).mockReturnValue('day');
       (phaseManager.canTransition as jest.Mock).mockReturnValue(true);
 
-      gateway['handleNextPhase'](socket, { roomCode: 'ROOM123' });
+      gateway['handleNextPhase'](socket, { roomCode: '123456' });
 
       expect(phaseManager.canTransition).toHaveBeenCalledWith(
-        'ROOM123',
+        '123456',
         'voting',
       );
-      expect(phaseManager.startVotingPhase).toHaveBeenCalledWith('ROOM123');
+      expect(phaseManager.startVotingPhase).toHaveBeenCalledWith('123456');
     });
 
     it('should transition from conclude to night', () => {
@@ -1170,13 +1316,13 @@ describe('GameGateway', () => {
       (phaseManager.canTransition as jest.Mock).mockReturnValue(true);
       (phaseManager.startNightPhase as jest.Mock).mockResolvedValue(undefined);
 
-      gateway['handleNextPhase'](socket, { roomCode: 'ROOM123' });
+      gateway['handleNextPhase'](socket, { roomCode: '123456' });
 
       expect(phaseManager.canTransition).toHaveBeenCalledWith(
-        'ROOM123',
+        '123456',
         'night',
       );
-      expect(phaseManager.startNightPhase).toHaveBeenCalledWith('ROOM123');
+      expect(phaseManager.startNightPhase).toHaveBeenCalledWith('123456');
     });
 
     it('should emit error when transition not allowed', () => {
@@ -1184,7 +1330,7 @@ describe('GameGateway', () => {
       (phaseManager.getPhase as jest.Mock).mockReturnValue('day');
       (phaseManager.canTransition as jest.Mock).mockReturnValue(false);
 
-      gateway['handleNextPhase'](socket, { roomCode: 'ROOM123' });
+      gateway['handleNextPhase'](socket, { roomCode: '123456' });
 
       expect(socket.emit).toHaveBeenCalledWith(
         'room:phaseError',
@@ -1196,7 +1342,7 @@ describe('GameGateway', () => {
       const socket = makeSocket('gm-socket');
       (phaseManager.getPhase as jest.Mock).mockReturnValue('ended');
 
-      gateway['handleNextPhase'](socket, { roomCode: 'ROOM123' });
+      gateway['handleNextPhase'](socket, { roomCode: '123456' });
 
       expect(socket.emit).toHaveBeenCalledWith('room:phaseError', {
         message: 'Trò chơi đã kết thúc.',
@@ -1219,6 +1365,10 @@ describe('GameGateway', () => {
         roomCode: '',
         targetId: 'p1',
       });
+      gateway['handleCupidActionDone'](socket, {
+        roomCode: '',
+        targetIds: ['p1', 'p2'],
+      });
 
       expect(phaseManager.handleRoleResponse).not.toHaveBeenCalled();
     });
@@ -1227,12 +1377,12 @@ describe('GameGateway', () => {
       const socket = makeSocket('player-socket');
 
       gateway['handleWerewolfActionDone'](socket, {
-        roomCode: 'ROOM123',
+        roomCode: '123456',
         targetId: 'p1',
       });
 
       expect(phaseManager.handleRoleResponse).toHaveBeenCalledWith(
-        'ROOM123',
+        '123456',
         'player-socket',
         expect.objectContaining({ targetId: 'p1', vote: 'werewolf' }),
       );
@@ -1242,12 +1392,12 @@ describe('GameGateway', () => {
       const socket = makeSocket('player-socket');
 
       gateway['handleSeerActionDone'](socket, {
-        roomCode: 'ROOM123',
+        roomCode: '123456',
         targetId: 'p2',
       });
 
       expect(phaseManager.handleRoleResponse).toHaveBeenCalledWith(
-        'ROOM123',
+        '123456',
         'player-socket',
         expect.objectContaining({ targetId: 'p2', vote: 'seer' }),
       );
@@ -1257,13 +1407,13 @@ describe('GameGateway', () => {
       const socket = makeSocket('player-socket');
 
       gateway['handleWitchActionDone'](socket, {
-        roomCode: 'ROOM123',
+        roomCode: '123456',
         heal: true,
         poisonTargetId: 'p3',
       });
 
       expect(phaseManager.handleRoleResponse).toHaveBeenCalledWith(
-        'ROOM123',
+        '123456',
         'player-socket',
         expect.objectContaining({
           heal: true,
@@ -1277,27 +1427,53 @@ describe('GameGateway', () => {
       const socket = makeSocket('player-socket');
 
       gateway['handleBodyguardActionDone'](socket, {
-        roomCode: 'ROOM123',
+        roomCode: '123456',
         targetId: 'p4',
       });
 
       expect(phaseManager.handleRoleResponse).toHaveBeenCalledWith(
-        'ROOM123',
+        '123456',
         'player-socket',
         expect.objectContaining({ targetId: 'p4', vote: 'bodyguard' }),
       );
+    });
+
+    it('should delegate cupid action to phaseManager', () => {
+      const socket = makeSocket('player-socket');
+
+      gateway['handleCupidActionDone'](socket, {
+        roomCode: '123456',
+        targetIds: ['p1', 'p2'],
+      });
+
+      expect(phaseManager.handleRoleResponse).toHaveBeenCalledWith(
+        '123456',
+        'player-socket',
+        expect.objectContaining({ targetIds: ['p1', 'p2'], vote: 'cupid' }),
+      );
+    });
+
+    it('should reject malformed cupid action payload', () => {
+      const socket = makeSocket('player-socket');
+
+      gateway['handleCupidActionDone'](socket, {
+        roomCode: '123456',
+        targetIds: 'p1' as any,
+      });
+
+      expect(phaseManager.handleRoleResponse).not.toHaveBeenCalled();
     });
 
     it('should delegate hunter action to phaseManager', () => {
       const socket = makeSocket('player-socket');
 
       gateway['handleHunterActionDone'](socket, {
-        roomCode: 'ROOM123',
+        roomCode: '123456',
         targetId: 'p5',
       });
 
       expect(phaseManager.handleRoleResponse).toHaveBeenCalledWith(
-        'ROOM123',
+        '123456',
         'player-socket',
         expect.objectContaining({ targetId: 'p5', vote: 'hunter' }),
       );
@@ -1311,7 +1487,7 @@ describe('GameGateway', () => {
       // Empty targetId should fail
       (roomService.getRoom as jest.Mock).mockReturnValue({});
       gateway['handleVotingDone'](socket, {
-        roomCode: 'ROOM123',
+        roomCode: '123456',
         targetId: '',
       });
       expect(phaseManager.handleVotingResponse).not.toHaveBeenCalled();
@@ -1322,12 +1498,12 @@ describe('GameGateway', () => {
       (roomService.getRoom as jest.Mock).mockReturnValue({});
 
       gateway['handleVotingDone'](socket, {
-        roomCode: 'ROOM123',
+        roomCode: '123456',
         targetId: 'p2',
       });
 
       expect(phaseManager.handleVotingResponse).toHaveBeenCalledWith(
-        'ROOM123',
+        '123456',
         'player-socket',
         { choice: undefined, targetId: 'p2' },
       );
@@ -1337,13 +1513,13 @@ describe('GameGateway', () => {
       const socket = makeSocket('player-socket');
 
       gateway['handleVotingDone'](socket, {
-        roomCode: 'ROOM123',
+        roomCode: '123456',
         choice: 'abstain',
         targetId: null,
       });
 
       expect(phaseManager.handleVotingResponse).toHaveBeenCalledWith(
-        'ROOM123',
+        '123456',
         'player-socket',
         { choice: 'abstain', targetId: null },
       );
@@ -1366,13 +1542,13 @@ describe('GameGateway', () => {
       const socket = makeSocket('player-socket');
 
       gateway['handleHunterShootDone'](socket, {
-        roomCode: 'ROOM123',
+        roomCode: '123456',
         targetId: 'p2',
         winCondition: 'werewolves',
       });
 
       expect(phaseManager.handleHunterDeathShoot).toHaveBeenCalledWith(
-        'ROOM123',
+        '123456',
         'player-socket',
         'p2',
       );
@@ -1397,7 +1573,7 @@ describe('GameGateway', () => {
         actions: [],
         lastActivityAt: Date.now(),
       };
-      (roomService.findRoomBySocketId as jest.Mock).mockReturnValue('ROOM123');
+      (roomService.findRoomBySocketId as jest.Mock).mockReturnValue('123456');
       (roomService.getRoom as jest.Mock).mockReturnValue(mockRoom);
       gateway['server'] = {
         to: jest.fn().mockReturnValue({ emit: jest.fn() }),
@@ -1406,7 +1582,7 @@ describe('GameGateway', () => {
       gateway['handleDisconnect'](socket);
 
       expect(roomService.setGmDisconnected).toHaveBeenCalledWith(
-        'ROOM123',
+        '123456',
         'gm-socket',
       );
     });
@@ -1434,7 +1610,7 @@ describe('GameGateway', () => {
         actions: [],
         lastActivityAt: Date.now(),
       };
-      (roomService.findRoomBySocketId as jest.Mock).mockReturnValue('ROOM123');
+      (roomService.findRoomBySocketId as jest.Mock).mockReturnValue('123456');
       (roomService.getRoom as jest.Mock).mockReturnValue(mockRoom);
       gateway['server'] = {
         to: jest.fn().mockReturnValue({ emit: jest.fn() }),

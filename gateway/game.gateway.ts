@@ -13,6 +13,7 @@ import { Player, PlayerSelfView, PublicPlayer, Role, Room } from '../types';
 import { Injectable, Logger } from '@nestjs/common';
 import { PhaseManager } from '../service/phase-manager.service';
 import type { VotingSubmissionAck } from '../service/phase-manager.service';
+import { PushNotificationService } from '../service/push-notification.service';
 import { TimerInfo, VotingChoice } from '../service/game-engine';
 import 'dotenv/config';
 
@@ -35,6 +36,7 @@ export class GameGateway implements OnGatewayInit, OnGatewayDisconnect {
   constructor(
     private readonly roomService: RoomService,
     private readonly phaseManager: PhaseManager,
+    private readonly pushNotificationService: PushNotificationService,
   ) {}
 
   afterInit() {
@@ -138,6 +140,27 @@ export class GameGateway implements OnGatewayInit, OnGatewayDisconnect {
     }
   }
 
+  private sendPush(
+    roomCode: string,
+    tokens: string[],
+    title: string,
+    body: string,
+    data: Record<string, string | undefined>,
+  ): void {
+    if (tokens.length === 0) return;
+
+    void this.pushNotificationService
+      .sendToTokens(tokens, { title, body, data })
+      .then(({ invalidTokens }) => {
+        if (invalidTokens.length > 0) {
+          this.roomService.removeInvalidPushTokens(roomCode, invalidTokens);
+        }
+      })
+      .catch((error) => {
+        this.logger.warn(`Push notification failed: ${String(error)}`);
+      });
+  }
+
   private validateString(value: unknown, maxLength = 100): value is string {
     return (
       typeof value === 'string' && value.length > 0 && value.length <= maxLength
@@ -147,7 +170,7 @@ export class GameGateway implements OnGatewayInit, OnGatewayDisconnect {
   private validateRoomCode(data: {
     roomCode?: unknown;
   }): data is { roomCode: string } {
-    return this.validateString(data?.roomCode, 20);
+    return RoomService.isValidRoomCode(data?.roomCode);
   }
 
   @SubscribeMessage('rq_gm:createRoom')
@@ -171,7 +194,7 @@ export class GameGateway implements OnGatewayInit, OnGatewayDisconnect {
     }
     if (
       data.roomCode !== undefined &&
-      !this.validateString(data.roomCode, 20)
+      !RoomService.isValidRoomCode(data.roomCode)
     ) {
       return { success: false, message: 'Invalid room code.' };
     }
@@ -272,6 +295,11 @@ export class GameGateway implements OnGatewayInit, OnGatewayDisconnect {
     const snapshot = this.phaseManager.getGmStateSnapshot?.(data.roomCode);
     if (snapshot) {
       socket.emit('gm:stateSnapshot', snapshot);
+    }
+
+    const votingProgress = this.phaseManager.getVotingProgress(data.roomCode);
+    if (votingProgress) {
+      socket.emit('voting:progress', votingProgress);
     }
   }
 
@@ -524,6 +552,11 @@ export class GameGateway implements OnGatewayInit, OnGatewayDisconnect {
         socket.emit('game:timerStop', {});
       }
     }
+
+    const votingProgress = this.phaseManager.getVotingProgress(data.roomCode);
+    if (votingProgress) {
+      socket.emit('voting:progress', votingProgress);
+    }
   }
 
   @SubscribeMessage('push:register')
@@ -628,11 +661,14 @@ export class GameGateway implements OnGatewayInit, OnGatewayDisconnect {
       deviceId?: string;
       participantKind: 'player' | 'gm';
       persistentPlayerId?: string;
+      reconnectToken?: string;
       gmPersistentId?: string;
+      gmReconnectToken?: string;
     },
   ) {
     if (
       !this.validateRoomCode(data) ||
+      (!data.token && !data.deviceId) ||
       (data.token !== undefined && !this.validateString(data.token, 4096)) ||
       (data.deviceId !== undefined && !this.validateString(data.deviceId, 128)) ||
       (data.participantKind !== 'player' && data.participantKind !== 'gm')
@@ -647,16 +683,35 @@ export class GameGateway implements OnGatewayInit, OnGatewayDisconnect {
 
     let participantId: string | undefined;
     if (data.participantKind === 'gm') {
-      if (room.hostId !== socket.id) {
+      const authorizedBySocket = room.hostId === socket.id;
+      const authorizedByToken =
+        this.validateString(data?.gmPersistentId, 64) &&
+        this.validateString(data?.gmReconnectToken, 100) &&
+        room.gmPersistentId === data.gmPersistentId &&
+        this.roomService.validateGmReconnectToken(
+          data.roomCode,
+          data.gmPersistentId,
+          data.gmReconnectToken,
+        );
+      if (!authorizedBySocket && !authorizedByToken) {
         return { success: false, status: 'rejected', message: 'Not authorized.' };
       }
       participantId = room.players.find((p) => p.status === 'gm')?.id;
     } else {
       const participantKind = this.getRoomParticipantKind(socket, data.roomCode);
-      if (participantKind !== 'player') {
+      const authorizedBySocket = participantKind === 'player';
+      const authorizedByToken =
+        this.validateString(data?.persistentPlayerId, 64) &&
+        this.validateString(data?.reconnectToken, 100) &&
+        this.roomService.validateReconnectToken(
+          data.roomCode,
+          data.persistentPlayerId,
+          data.reconnectToken,
+        );
+      if (!authorizedBySocket && !authorizedByToken) {
         return { success: false, status: 'rejected', message: 'Not authorized.' };
       }
-      participantId = socket.id;
+      participantId = authorizedBySocket ? socket.id : data.persistentPlayerId;
     }
 
     if (!participantId) {
@@ -804,6 +859,7 @@ export class GameGateway implements OnGatewayInit, OnGatewayDisconnect {
     if (room.gameStarted && phase !== 'ended' && !data.force) {
       return {
         success: false,
+        status: 'requires_force',
         message: 'Ván đang diễn ra. Cần xác nhận reset cưỡng bức.',
       };
     }
@@ -811,6 +867,10 @@ export class GameGateway implements OnGatewayInit, OnGatewayDisconnect {
     this.phaseManager.resetRoomState(data.roomCode);
     const resetRoom = this.roomService.resetRoom(data.roomCode);
     if (!resetRoom) return { success: false, message: 'Không thể reset phòng.' };
+    const resetPlayerPushTokens = this.roomService.getPushTokensForRoomPlayers(
+      data.roomCode,
+      { approvedOnly: true },
+    );
 
     const payload = {
       roomCode: data.roomCode,
@@ -826,6 +886,19 @@ export class GameGateway implements OnGatewayInit, OnGatewayDisconnect {
       this.server.to(resetRoom.gmRoomId).emit('room:reset', payload);
     }
     this.emitRoomPlayers(data.roomCode);
+    this.sendPush(
+      data.roomCode,
+      resetPlayerPushTokens,
+      'Phòng đã được reset',
+      'Quản trò đã đưa mọi người về sảnh chờ. Có thể chơi lại trong cùng phòng.',
+      {
+        type: 'room-reset',
+        roomCode: data.roomCode,
+        participantKind: 'player',
+        url: `/lobby/${data.roomCode}`,
+        snapshotHint: 'request-on-open',
+      },
+    );
 
     return {
       success: true,
@@ -859,6 +932,19 @@ export class GameGateway implements OnGatewayInit, OnGatewayDisconnect {
         ...(room ? this.serializeRoomForSocket(room, data.playerId) : {}),
         roomCode: data.roomCode,
       });
+      this.sendPush(
+        data.roomCode,
+        this.roomService.getPushTokensForPlayer(data.roomCode, data.playerId),
+        'Bạn đã được duyệt vào phòng',
+        'Mở Ma Sói để xem vai và sẵn sàng chơi.',
+        {
+          type: 'room-approved',
+          roomCode: data.roomCode,
+          participantKind: 'player',
+          url: `/lobby/${data.roomCode}`,
+          snapshotHint: 'request-on-open',
+        },
+      );
     } else {
       socket.emit('room:approvePlayerError', {
         message: 'Unable to approve player.',
@@ -878,12 +964,29 @@ export class GameGateway implements OnGatewayInit, OnGatewayDisconnect {
       socket.emit('room:rejectPlayerError', { message: 'Not authorized.' });
       return;
     }
+    const pushTokens = this.roomService.getPushTokensForPlayer(
+      data.roomCode,
+      data.playerId,
+    );
     const success = this.roomService.rejectPlayer(data.roomCode, data.playerId);
     if (success) {
       this.emitRoomPlayers(data.roomCode);
       this.server
         .to(data.playerId)
         .emit('player:rejected', { message: 'You were rejected by the GM.' });
+      this.sendPush(
+        data.roomCode,
+        pushTokens,
+        'Yêu cầu vào phòng bị từ chối',
+        'Quản trò đã từ chối yêu cầu tham gia phòng.',
+        {
+          type: 'room-rejected',
+          roomCode: data.roomCode,
+          participantKind: 'player',
+          url: '/',
+          snapshotHint: 'request-on-open',
+        },
+      );
     } else {
       socket.emit('room:rejectPlayerError', {
         message: 'Unable to reject player.',
@@ -911,42 +1014,90 @@ export class GameGateway implements OnGatewayInit, OnGatewayDisconnect {
   @SubscribeMessage('rq_gm:eliminatePlayer')
   handleGmEliminatePlayer(
     @ConnectedSocket() socket: Socket,
-    @MessageBody() data: { roomCode: string; playerId: string; reason: string },
+    @MessageBody()
+    data: { roomCode: string; playerId: string; reason?: string },
   ) {
-    if (!this.validateRoomCode(data) || !this.validateString(data?.playerId)) {
-      return;
+    if (
+      !this.validateRoomCode(data) ||
+      !this.validateString(data?.playerId) ||
+      !this.validateString(data?.reason, 120)
+    ) {
+      return {
+        success: false,
+        status: 'invalid_data',
+        message: 'Thông tin loại bỏ không hợp lệ.',
+      };
     }
     if (!this.isHost(socket, data.roomCode)) {
-      socket.emit('gm:eliminatePlayerError', { message: 'Not authorized.' });
-      return;
+      const ack = {
+        success: false,
+        status: 'not_authorized',
+        message: 'Not authorized.',
+      };
+      socket.emit('gm:eliminatePlayerError', { message: ack.message });
+      return ack;
     }
 
+    const room = this.roomService.getRoom(data.roomCode);
+    if (!room) {
+      return {
+        success: false,
+        status: 'room_not_found',
+        message: 'Không tìm thấy phòng.',
+      };
+    }
+
+    const player = room.players.find((p) => p.id === data.playerId);
+    if (!player || player.status !== 'approved') {
+      return {
+        success: false,
+        status: 'player_not_found',
+        message: 'Không tìm thấy người chơi hợp lệ.',
+      };
+    }
+    if (player.alive === false) {
+      return {
+        success: false,
+        status: 'invalid_state',
+        message: `${player.username} đã bị loại trước đó.`,
+      };
+    }
+
+    const reason = data.reason.trim();
     const success = this.roomService.eliminatePlayer(
       data.roomCode,
       data.playerId,
-      data.reason,
+      reason,
     );
 
-    if (success) {
-      this.phaseManager.eliminatePlayer(data.roomCode, data.playerId);
-      const players = this.roomService.getPlayers(data.roomCode);
-
-      this.emitRoomPlayers(data.roomCode);
-
-      const eliminatedPlayer = players.find((p) => p.id === data.playerId);
-      if (eliminatedPlayer) {
-        this.server.to(data.roomCode).emit('gm:nightAction', {
-          step: 'gm_elimination',
-          action: 'eliminate',
-          message: `Game master đã loại bỏ ${eliminatedPlayer.username}: ${data.reason}`,
-          timestamp: Date.now(),
-        });
-      }
-    } else {
-      socket.emit('gm:eliminatePlayerError', {
-        message: 'Failed to eliminate player.',
-      });
+    if (!success) {
+      const ack = {
+        success: false,
+        status: 'invalid_state',
+        message: 'Không thể loại bỏ người chơi.',
+      };
+      socket.emit('gm:eliminatePlayerError', { message: ack.message });
+      return ack;
     }
+
+    this.phaseManager.eliminatePlayer(data.roomCode, data.playerId);
+    const players = this.roomService.getPlayers(data.roomCode);
+    this.emitRoomPlayers(data.roomCode);
+
+    this.phaseManager.emitGmLog(data.roomCode, 'gm:nightAction', {
+      step: 'gm_elimination',
+      action: 'eliminate',
+      message: `GM đã loại bỏ ${player.username}: ${reason}`,
+      timestamp: Date.now(),
+    });
+
+    return {
+      success: true,
+      status: 'ok',
+      message: `Đã loại bỏ ${player.username}.`,
+      playerId: data.playerId,
+      players,
+    };
   }
 
   @SubscribeMessage('rq_gm:revivePlayer')
@@ -955,35 +1106,77 @@ export class GameGateway implements OnGatewayInit, OnGatewayDisconnect {
     @MessageBody() data: { roomCode: string; playerId: string },
   ) {
     if (!this.validateRoomCode(data) || !this.validateString(data?.playerId)) {
-      return;
+      return {
+        success: false,
+        status: 'invalid_data',
+        message: 'Thông tin hồi sinh không hợp lệ.',
+      };
     }
     if (!this.isHost(socket, data.roomCode)) {
-      socket.emit('gm:revivePlayerError', { message: 'Not authorized.' });
-      return;
+      const ack = {
+        success: false,
+        status: 'not_authorized',
+        message: 'Not authorized.',
+      };
+      socket.emit('gm:revivePlayerError', { message: ack.message });
+      return ack;
+    }
+
+    const room = this.roomService.getRoom(data.roomCode);
+    if (!room) {
+      return {
+        success: false,
+        status: 'room_not_found',
+        message: 'Không tìm thấy phòng.',
+      };
+    }
+
+    const player = room.players.find((p) => p.id === data.playerId);
+    if (!player || player.status !== 'approved') {
+      return {
+        success: false,
+        status: 'player_not_found',
+        message: 'Không tìm thấy người chơi hợp lệ.',
+      };
+    }
+    if (player.alive !== false) {
+      return {
+        success: false,
+        status: 'invalid_state',
+        message: `${player.username} hiện không ở trạng thái đã bị loại.`,
+      };
     }
 
     const success = this.roomService.revivePlayer(data.roomCode, data.playerId);
 
-    if (success) {
-      this.phaseManager.revivePlayer(data.roomCode, data.playerId);
-      const players = this.roomService.getPlayers(data.roomCode);
-
-      this.emitRoomPlayers(data.roomCode);
-
-      const revivedPlayer = players.find((p) => p.id === data.playerId);
-      if (revivedPlayer) {
-        this.server.to(data.roomCode).emit('gm:nightAction', {
-          step: 'gm_revival',
-          action: 'revive',
-          message: `GM đã hồi sinh ${revivedPlayer.username}`,
-          timestamp: Date.now(),
-        });
-      }
-    } else {
-      socket.emit('gm:revivePlayerError', {
-        message: 'Failed to revive player.',
-      });
+    if (!success) {
+      const ack = {
+        success: false,
+        status: 'invalid_state',
+        message: 'Không thể hồi sinh người chơi.',
+      };
+      socket.emit('gm:revivePlayerError', { message: ack.message });
+      return ack;
     }
+
+    this.phaseManager.revivePlayer(data.roomCode, data.playerId);
+    const players = this.roomService.getPlayers(data.roomCode);
+    this.emitRoomPlayers(data.roomCode);
+
+    this.phaseManager.emitGmLog(data.roomCode, 'gm:nightAction', {
+      step: 'gm_revival',
+      action: 'revive',
+      message: `GM đã hồi sinh ${player.username}`,
+      timestamp: Date.now(),
+    });
+
+    return {
+      success: true,
+      status: 'ok',
+      message: `Đã hồi sinh ${player.username}.`,
+      playerId: data.playerId,
+      players,
+    };
   }
 
   @SubscribeMessage('rq_player:getPlayers')
@@ -1028,6 +1221,7 @@ export class GameGateway implements OnGatewayInit, OnGatewayDisconnect {
       'hunter',
       'bodyguard',
       'tanner',
+      'cupid',
     ];
     if (!data.roles.every((role) => validRoles.includes(role)))
       return 'Invalid roles provided';
@@ -1061,23 +1255,36 @@ export class GameGateway implements OnGatewayInit, OnGatewayDisconnect {
   ) {
     if (!this.validateRoomCode(data)) return;
     const room = this.roomService.getRoom(data.roomCode);
-    const success = this.roomService.playerReady(data.roomCode, socket.id);
-    if (room) {
-      this.emitRoomPlayers(data.roomCode);
-      if (success) {
-        socket.emit('player:readySuccess', { roomCode: data.roomCode });
-        this.server.to(data.roomCode).emit('room:readySuccess');
-        if (!this.roomService.markGameStarted(data.roomCode)) return;
-        const approvedPlayers = room.players.filter(
-          (player) => player.status === 'approved',
-        );
-        this.phaseManager.initGameState(
-          data.roomCode,
-          approvedPlayers,
-          this.roomService.getGmRoomId(data.roomCode) ?? data.roomCode,
-        );
-      }
+    if (!room) return;
+
+    const allReady = this.roomService.playerReady(data.roomCode, socket.id);
+    const updatedRoom = this.roomService.getRoom(data.roomCode);
+    if (!updatedRoom) return;
+
+    this.emitRoomPlayers(data.roomCode);
+
+    const currentPlayer = updatedRoom.players.find((player) => player.id === socket.id);
+    if (currentPlayer?.status !== 'approved' || currentPlayer.ready !== true) {
+      socket.emit('player:readyError', {
+        message: 'Không thể đánh dấu sẵn sàng lúc này.',
+      });
+      return;
     }
+
+    socket.emit('player:readySuccess', { roomCode: data.roomCode });
+    if (!allReady) return;
+
+    if (!this.roomService.markGameStarted(data.roomCode)) return;
+    const startedRoom = this.roomService.getRoom(data.roomCode) ?? updatedRoom;
+    const approvedPlayers = startedRoom.players.filter(
+      (player) => player.status === 'approved',
+    );
+    this.phaseManager.initGameState(
+      data.roomCode,
+      approvedPlayers,
+      this.roomService.getGmRoomId(data.roomCode) ?? data.roomCode,
+    );
+    this.server.to(data.roomCode).emit('room:readySuccess');
   }
 
   @SubscribeMessage('rq_gm:nextPhase')
@@ -1189,6 +1396,15 @@ export class GameGateway implements OnGatewayInit, OnGatewayDisconnect {
   ) {
     if (!this.validateRoomCode(data)) return;
     this.handleRoleAction('bodyguard', socket, data);
+  }
+
+  @SubscribeMessage('night:cupid-action:done')
+  handleCupidActionDone(
+    @ConnectedSocket() socket: Socket,
+    @MessageBody() data: { roomCode: string; targetIds: string[] },
+  ) {
+    if (!this.validateRoomCode(data) || !Array.isArray(data.targetIds)) return;
+    this.handleRoleAction('cupid', socket, data);
   }
 
   @SubscribeMessage('night:hunter-action:done')

@@ -5,7 +5,8 @@ export type Role =
   | 'witch'
   | 'hunter'
   | 'bodyguard'
-  | 'tanner';
+  | 'tanner'
+  | 'cupid';
 
 export type Phase = 'night' | 'day' | 'voting' | 'conclude' | 'ended';
 

@@ -191,6 +191,52 @@ describe('GameEngine', () => {
     });
   });
 
+  describe('cupid actions', () => {
+    it('should return alive candidates for Cupid', () => {
+      const state = GameEngine.createInitialState(createPlayers());
+      state.players[0].alive = false;
+
+      const candidates = GameEngine.getCupidCandidates(state);
+
+      expect(candidates).toHaveLength(7);
+      expect(
+        candidates.find((candidate) => candidate.id === 'p1'),
+      ).toBeUndefined();
+      expect(candidates[0]).toEqual({ id: 'p2', username: 'Bob' });
+    });
+
+    it('should link exactly two unique alive players', () => {
+      const state = GameEngine.createInitialState(createPlayers());
+
+      GameEngine.applyCupidAction(state, ['p3', 'p6']);
+
+      expect(state.lovers).toEqual(['p3', 'p6']);
+      expect(state.cupidTargetIds).toEqual(['p3', 'p6']);
+      expect(state.cupidUsed).toBe(true);
+      expect(GameEngine.getLoverPartnerId(state, 'p3')).toBe('p6');
+      expect(GameEngine.getLoverPartnerId(state, 'p6')).toBe('p3');
+    });
+
+    it('should ignore duplicate, missing, invalid, or dead Cupid targets', () => {
+      const duplicateState = GameEngine.createInitialState(createPlayers());
+      GameEngine.applyCupidAction(duplicateState, ['p3', 'p3']);
+      expect(duplicateState.lovers).toBeUndefined();
+
+      const missingState = GameEngine.createInitialState(createPlayers());
+      GameEngine.applyCupidAction(missingState, ['p3']);
+      expect(missingState.lovers).toBeUndefined();
+
+      const invalidState = GameEngine.createInitialState(createPlayers());
+      GameEngine.applyCupidAction(invalidState, ['p3', 'nope']);
+      expect(invalidState.lovers).toBeUndefined();
+
+      const deadState = GameEngine.createInitialState(createPlayers());
+      deadState.players.find((player) => player.id === 'p6')!.alive = false;
+      GameEngine.applyCupidAction(deadState, ['p3', 'p6']);
+      expect(deadState.lovers).toBeUndefined();
+    });
+  });
+
   describe('applyWerewolfVotes', () => {
     it('should pick target with most votes', () => {
       const state = GameEngine.createInitialState(createPlayers());
@@ -295,6 +341,41 @@ describe('GameEngine', () => {
     });
   });
 
+  it('should kill lover when one lover dies at night', () => {
+    const state = GameEngine.createInitialState(createPlayers());
+    GameEngine.applyCupidAction(state, ['p3', 'p6']);
+    state.werewolfTarget = 'p3';
+
+    const result = GameEngine.resolveNightActions(state);
+
+    expect(result.deaths).toEqual(
+      expect.arrayContaining([
+        { playerId: 'p3', cause: 'werewolf' },
+        { playerId: 'p6', cause: 'lover' },
+      ]),
+    );
+    expect(state.players.find((player) => player.id === 'p3')?.alive).toBe(
+      false,
+    );
+    expect(state.players.find((player) => player.id === 'p6')?.alive).toBe(
+      false,
+    );
+  });
+
+  it('should not duplicate lover deaths when both lovers die at night', () => {
+    const state = GameEngine.createInitialState(createPlayers());
+    GameEngine.applyCupidAction(state, ['p3', 'p6']);
+    state.werewolfTarget = 'p3';
+    state.witch.poisonTarget = 'p6';
+
+    const result = GameEngine.resolveNightActions(state);
+
+    expect(result.deaths).toEqual([
+      { playerId: 'p3', cause: 'werewolf' },
+      { playerId: 'p6', cause: 'witch' },
+    ]);
+  });
+
   describe('resolveVoting', () => {
     it('should eliminate player with most votes', () => {
       const state = GameEngine.createInitialState(createPlayers());
@@ -353,6 +434,53 @@ describe('GameEngine', () => {
       expect(result.eliminatedPlayerId).toBe('p7');
       expect(result.cause).toBe('hunter');
     });
+  });
+
+  it('should add lover death when voting eliminates one lover', () => {
+    const state = GameEngine.createInitialState(createPlayers());
+    GameEngine.applyCupidAction(state, ['p3', 'p6']);
+    state.votes = { p1: 'p3', p2: 'p3', p4: 'p3' };
+
+    const result = GameEngine.resolveVoting(state);
+
+    expect(result.eliminatedPlayerId).toBe('p3');
+    expect(result.cause).toBe('vote');
+    expect(result.additionalDeaths).toEqual([
+      { playerId: 'p6', cause: 'lover' },
+    ]);
+    expect(state.players.find((player) => player.id === 'p6')?.alive).toBe(
+      false,
+    );
+  });
+
+  it('should not trigger Tanner win when Tanner dies by heartbreak', () => {
+    const state = GameEngine.createInitialState(createPlayers());
+    GameEngine.applyCupidAction(state, ['p6', 'p8']);
+    state.votes = { p1: 'p6', p2: 'p6', p4: 'p6' };
+
+    const result = GameEngine.resolveVoting(state);
+
+    expect(result.eliminatedPlayerId).toBe('p6');
+    expect(result.isTanner).toBeUndefined();
+    expect(result.additionalDeaths).toEqual([
+      { playerId: 'p8', cause: 'lover' },
+    ]);
+    expect(state.phase).not.toBe('ended');
+  });
+
+  it('should mark hunter action when Hunter dies by heartbreak', () => {
+    const state = GameEngine.createInitialState(createPlayers());
+    GameEngine.applyCupidAction(state, ['p6', 'p7']);
+    state.votes = { p1: 'p6', p2: 'p6', p4: 'p6' };
+
+    const result = GameEngine.resolveVoting(state);
+
+    expect(result.eliminatedPlayerId).toBe('p6');
+    expect(result.cause).toBe('hunter');
+    expect(result.hunterDeathPlayerId).toBe('p7');
+    expect(result.additionalDeaths).toEqual([
+      { playerId: 'p7', cause: 'lover' },
+    ]);
   });
 
   describe('checkWinCondition', () => {
@@ -417,6 +545,12 @@ describe('GameEngine', () => {
   });
 
   describe('getDefaultRoleResponse', () => {
+    it('should return empty for Cupid (skip)', () => {
+      const state = GameEngine.createInitialState(createPlayers());
+      const response = GameEngine.getDefaultRoleResponse('cupid', state);
+      expect(response).toEqual({});
+    });
+
     it('should return empty for bodyguard (skip)', () => {
       const state = GameEngine.createInitialState(createPlayers());
       const response = GameEngine.getDefaultRoleResponse('bodyguard', state);
@@ -481,6 +615,7 @@ describe('GameEngine', () => {
       expect(GameEngine.getRoleDisplayName('witch')).toBe('Phù thủy');
       expect(GameEngine.getRoleDisplayName('bodyguard')).toBe('Bảo vệ');
       expect(GameEngine.getRoleDisplayName('hunter')).toBe('Thợ săn');
+      expect(GameEngine.getRoleDisplayName('cupid')).toBe('Thần tình yêu');
     });
 
     it('should return raw role for unknown roles', () => {

@@ -1,7 +1,7 @@
 import { Phase, Player } from '../types';
 
 export interface TimerInfo {
-  context: 'bodyguard' | 'werewolf' | 'witch' | 'seer' | 'voting';
+  context: 'cupid' | 'bodyguard' | 'werewolf' | 'witch' | 'seer' | 'voting';
   durationMs: number;
   deadline: number;
 }
@@ -52,7 +52,7 @@ export interface GameState {
   lastProtected?: string;
   phaseTimeout?: NodeJS.Timeout;
   actionsReceived?: Set<string>;
-  currentNightStep?: 'bodyguard' | 'werewolf' | 'witch' | 'seer';
+  currentNightStep?: 'cupid' | 'bodyguard' | 'werewolf' | 'witch' | 'seer';
   werewolfVotes?: Record<string, string>;
   gmRoomId?: string;
   votingResolved?: boolean;
@@ -64,10 +64,14 @@ export interface GameState {
   lastVotingResult?: unknown;
   winner?: 'villagers' | 'werewolves' | 'tanner';
   round: number;
+  lovers?: [string, string];
+  cupidTargetIds?: [string, string];
+  cupidUsed: boolean;
 }
 
 export interface RoleResponse {
   targetId?: string;
+  targetIds?: string[];
   heal?: boolean;
   poisonTargetId?: string;
   vote?: string;
@@ -82,6 +86,8 @@ export interface VotingResult {
   cause: 'vote' | 'hunter' | 'tie' | 'no_votes';
   tiedPlayerIds?: string[];
   isTanner?: boolean;
+  additionalDeaths?: Array<{ playerId: string; cause: 'lover' }>;
+  hunterDeathPlayerId?: string;
 }
 
 // --- Narrative Log Types ---
@@ -136,6 +142,7 @@ const ROLE_DISPLAY_NAMES: Record<string, string> = {
   bodyguard: 'Bảo vệ',
   hunter: 'Thợ săn',
   tanner: 'Chán đời',
+  cupid: 'Thần tình yêu',
 };
 
 const VALID_TRANSITIONS: Record<string, string[]> = {
@@ -167,6 +174,7 @@ export class GameEngine {
       gameLog: [],
       gmActionLog: [],
       round: 0,
+      cupidUsed: false,
     };
   }
 
@@ -241,6 +249,14 @@ export class GameEngine {
       .map((p) => ({ id: p.id, username: p.username }));
   }
 
+  static getCupidCandidates(
+    state: GameState,
+  ): Array<{ id: string; username: string }> {
+    return state.players
+      .filter((p) => p.alive)
+      .map((p) => ({ id: p.id, username: p.username }));
+  }
+
   /** Returns true if the target is a werewolf — sent back only after the seer confirms their pick. */
   static getSeerResult(state: GameState, targetId: string): boolean {
     const target = state.players.find((p) => p.id === targetId);
@@ -268,6 +284,60 @@ export class GameEngine {
       state.bodyguardTarget = targetId;
       state.lastProtected = targetId;
     }
+  }
+
+  static applyCupidAction(state: GameState, targetIds?: string[]): void {
+    if (state.cupidUsed || !targetIds || targetIds.length !== 2) {
+      return;
+    }
+
+    const [firstId, secondId] = targetIds;
+    if (firstId === secondId) {
+      return;
+    }
+
+    if (!this.isAlivePlayer(state, firstId) || !this.isAlivePlayer(state, secondId)) {
+      return;
+    }
+
+    state.lovers = [firstId, secondId];
+    state.cupidTargetIds = [firstId, secondId];
+    state.cupidUsed = true;
+  }
+
+  static getLoverPartnerId(state: GameState, playerId: string): string | undefined {
+    if (!state.lovers) return undefined;
+    const [firstId, secondId] = state.lovers;
+    if (playerId === firstId) return secondId;
+    if (playerId === secondId) return firstId;
+    return undefined;
+  }
+
+  static applyLoverDeaths(
+    state: GameState,
+    deaths: Array<{ playerId: string; cause: string }>,
+  ): Array<{ playerId: string; cause: string }> {
+    const allDeaths = [...deaths];
+
+    for (const death of deaths) {
+      const partnerId = this.getLoverPartnerId(state, death.playerId);
+      if (
+        partnerId &&
+        this.isAlivePlayer(state, partnerId) &&
+        !allDeaths.some((existing) => existing.playerId === partnerId)
+      ) {
+        allDeaths.push({ playerId: partnerId, cause: 'lover' });
+      }
+    }
+
+    for (const death of allDeaths) {
+      const player = state.players.find((p) => p.id === death.playerId);
+      if (player) {
+        player.alive = false;
+      }
+    }
+
+    return allDeaths;
   }
 
   static applyWerewolfVotes(
@@ -356,15 +426,7 @@ export class GameEngine {
       }
     }
 
-    // Mark players as dead
-    for (const death of deaths) {
-      const player = state.players.find((p) => p.id === death.playerId);
-      if (player) {
-        player.alive = false;
-      }
-    }
-
-    return { deaths };
+    return { deaths: this.applyLoverDeaths(state, deaths) };
   }
 
   // --- Voting ---
@@ -475,10 +537,32 @@ export class GameEngine {
         };
       }
 
-      // Hunter gets to shoot
-      if (eliminated.role === 'hunter') {
-        return { eliminatedPlayerId: eliminatedId, cause: 'hunter' };
+      const deaths = this.applyLoverDeaths(state, [
+        { playerId: eliminatedId, cause: 'vote' },
+      ]);
+      const additionalDeaths = deaths
+        .filter((death) => death.playerId !== eliminatedId && death.cause === 'lover')
+        .map((death) => ({ playerId: death.playerId, cause: 'lover' as const }));
+      const hunterDeath = deaths.find(
+        (death) =>
+          state.players.find((p) => p.id === death.playerId)?.role === 'hunter',
+      );
+
+      // Hunter gets to shoot if they died by vote or lover heartbreak
+      if (hunterDeath) {
+        return {
+          eliminatedPlayerId: eliminatedId,
+          cause: 'hunter',
+          additionalDeaths,
+          hunterDeathPlayerId: hunterDeath.playerId,
+        };
       }
+
+      return {
+        eliminatedPlayerId: eliminatedId,
+        cause: 'vote',
+        additionalDeaths,
+      };
     }
 
     return { eliminatedPlayerId: eliminatedId, cause: 'vote' };
@@ -527,6 +611,8 @@ export class GameEngine {
 
   static getDefaultRoleResponse(role: string, state: GameState): RoleResponse {
     switch (role) {
+      case 'cupid':
+        return {};
       case 'bodyguard':
         return {};
       case 'werewolf': {
