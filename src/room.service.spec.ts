@@ -178,11 +178,12 @@ describe('RoomService', () => {
       service.approvePlayer(roomCode, 'old-socket');
     });
 
-    it('should update socket id and return the player', () => {
-      const player = service.rejoinPlayer(roomCode, 'new-socket', 'pid-1');
+    it('should update socket id and return the player with the previous socket id', () => {
+      const result = service.rejoinPlayer(roomCode, 'new-socket', 'pid-1');
 
-      expect(player).not.toBeNull();
-      expect(player?.id).toBe('new-socket');
+      expect(result).not.toBeNull();
+      expect(result?.oldSocketId).toBe('old-socket');
+      expect(result?.player.id).toBe('new-socket');
     });
 
     it('should return null for unknown persistentId', () => {

@@ -27,6 +27,11 @@ export interface UpdatePlayerInfoResult {
   status?: 'updated' | 'not_in_room' | 'room_not_found' | 'invalid_participant';
 }
 
+export interface RejoinPlayerResult {
+  player: Player;
+  oldSocketId: string;
+}
+
 @Injectable()
 export class RoomService implements OnModuleDestroy {
   private rooms = new Map<string, Room>();
@@ -274,21 +279,22 @@ export class RoomService implements OnModuleDestroy {
     return true;
   }
 
-  /** Replace a disconnected player's socket ID with the new one. Returns the updated player or null. */
+  /** Replace a disconnected player's socket ID with the new one. Returns the updated player and previous socket ID. */
   rejoinPlayer(
     roomCode: string,
     newSocketId: string,
     persistentId: string,
-  ): Player | null {
+  ): RejoinPlayerResult | null {
     const room = this.rooms.get(roomCode);
     if (!room) return null;
 
     const player = room.players.find((p) => p.persistentId === persistentId);
     if (!player || player.status === 'rejected') return null;
 
+    const oldSocketId = player.id;
     player.id = newSocketId;
     this.touchRoom(roomCode);
-    return player;
+    return { player, oldSocketId };
   }
 
   approvePlayer(roomCode: string, playerId: string): boolean {

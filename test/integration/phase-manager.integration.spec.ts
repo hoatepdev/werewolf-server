@@ -213,6 +213,70 @@ describe('PhaseManager Integration', () => {
       });
       expect(state.phase).toBe('conclude');
       expect(Object.keys(state.votes)).toHaveLength(0);
+
+      const votingLog = state.gameLog.find((e) => e.type === 'voting_result');
+      expect(votingLog).toMatchObject({
+        type: 'voting_result',
+        abstainCount: alivePlayers.length,
+        timeoutCount: 0,
+        targetVoteCount: 0,
+        totalVoters: alivePlayers.length,
+      });
+      expect(votingLog?.votes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            voter: 'Wolf1',
+            target: null,
+            kind: 'abstain',
+          }),
+        ]),
+      );
+    });
+
+    it('should record timeout votes in the voting log', () => {
+      phaseManager.startVotingPhase(roomId);
+
+      const state = phaseManager.getGameStateForTest(roomId)!;
+      const alivePlayers = state.players.filter((p) => p.alive);
+
+      phaseManager.handleVotingResponse(roomId, 'socket-p1', {
+        choice: 'target',
+        targetId: 'socket-p7',
+      });
+      phaseManager.handleVotingResponse(roomId, 'socket-p2', {
+        choice: 'abstain',
+        targetId: null,
+      });
+
+      (phaseManager as any).handleVoting(roomId);
+
+      const votingLog = state.gameLog.find((e) => e.type === 'voting_result');
+      expect(votingLog).toMatchObject({
+        type: 'voting_result',
+        abstainCount: 1,
+        timeoutCount: alivePlayers.length - 2,
+        targetVoteCount: 1,
+        totalVoters: alivePlayers.length,
+      });
+      expect(votingLog?.votes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            voter: 'Wolf1',
+            target: 'Villager2',
+            kind: 'target',
+          }),
+          expect.objectContaining({
+            voter: 'Wolf2',
+            target: null,
+            kind: 'abstain',
+          }),
+          expect.objectContaining({
+            voter: 'Seer',
+            target: null,
+            kind: 'timeout',
+          }),
+        ]),
+      );
     });
 
     it('should record votes and trigger phase resolution when all players vote', () => {
@@ -346,6 +410,51 @@ describe('PhaseManager Integration', () => {
         (p) => (p as { persistentId?: string }).persistentId === 'pid-p1',
       );
       expect(player?.id).toBe('new-socket-id');
+    });
+
+    it('should migrate socket-indexed game state using an explicit previous socket ID', () => {
+      const state = phaseManager.getGameStateForTest(roomId)!;
+      state.phase = 'voting';
+      state.actionsReceived = new Set(['socket-p1']);
+      state.votes = { 'socket-p1': 'socket-p2', 'socket-p3': 'socket-p1' };
+      state.votingResponses = new Map([
+        [
+          'socket-p1',
+          {
+            voterId: 'socket-p1',
+            choice: 'target',
+            targetId: 'socket-p2',
+            receivedAt: Date.now(),
+          },
+        ],
+      ]);
+      state.lovers = ['socket-p1', 'socket-p2'];
+      state.cupidTargetIds = ['socket-p3', 'socket-p1'];
+
+      const player = state.players.find(
+        (p) => (p as { persistentId?: string }).persistentId === 'pid-p1',
+      )!;
+      // Simulate RoomService mutating the shared player object before PhaseManager runs.
+      player.id = 'new-socket-id';
+
+      phaseManager.updatePlayerSocketId(
+        roomId,
+        'pid-p1',
+        'new-socket-id',
+        'socket-p1',
+      );
+
+      expect(state.actionsReceived.has('socket-p1')).toBe(false);
+      expect(state.actionsReceived.has('new-socket-id')).toBe(true);
+      expect(state.votes['socket-p1']).toBeUndefined();
+      expect(state.votes['new-socket-id']).toBe('socket-p2');
+      expect(state.votes['socket-p3']).toBe('new-socket-id');
+      expect(state.votingResponses.has('socket-p1')).toBe(false);
+      expect(state.votingResponses.get('new-socket-id')).toEqual(
+        expect.objectContaining({ voterId: 'new-socket-id' }),
+      );
+      expect(state.lovers).toEqual(['new-socket-id', 'socket-p2']);
+      expect(state.cupidTargetIds).toEqual(['socket-p3', 'new-socket-id']);
     });
   });
 
@@ -546,6 +655,37 @@ describe('PhaseManager — full night cycle (zero-delay)', () => {
       witchHeal: true,
       witchPoisonTarget: 'Villager2',
     });
+
+    const playerSnapshot = phaseManager.getPlayerStateSnapshot(roomId, 'socket-p6');
+    const playerNightLog = playerSnapshot?.gameLog?.find(
+      (entry) => entry.type === 'night_result',
+    );
+    expect(playerNightLog).toMatchObject({
+      type: 'night_result',
+      werewolfTarget: null,
+      bodyguardTarget: null,
+      seerTarget: null,
+      seerResult: null,
+      witchHeal: false,
+      witchPoisonTarget: null,
+      cupidPair: null,
+      saved: [],
+    });
+
+    const gmSnapshot = phaseManager.getGmStateSnapshot(roomId);
+    const gmNightLog = gmSnapshot?.gameLog.find(
+      (entry) => entry.type === 'night_result',
+    );
+    expect(gmNightLog).toMatchObject({
+      type: 'night_result',
+      witchHeal: true,
+      witchPoisonTarget: 'Villager2',
+    });
+    expect(gmSnapshot?.gmActionLog).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: 'nightAction' }),
+      ]),
+    );
   });
 
   it('should advance round counter after each night phase', async () => {

@@ -11,6 +11,7 @@ import {
   VotingResult,
   TimerInfo,
   VotingChoice,
+  PublicNightResult,
 } from './game-engine';
 
 type VotingResponseKind = 'target' | 'abstain' | 'timeout';
@@ -63,6 +64,7 @@ export interface PlayerStateSnapshot {
   players: PlayerSelfView[];
   timer?: TimerInfo;
   nightPrompt?: NightPromptSnapshot | null;
+  nightResult?: PublicNightResult | null;
   hunterDeathShooting?: boolean;
   voting?: {
     progress?: VotingProgressPayload;
@@ -82,6 +84,7 @@ export interface GmStateSnapshot {
   gameStarted: boolean;
   players: Player[];
   timer?: TimerInfo;
+  gameLog: GameState['gameLog'];
   gmActionLog: GameState['gmActionLog'];
   winner?: 'villagers' | 'werewolves' | 'tanner';
   lovers?: [string, string];
@@ -506,6 +509,7 @@ export class PhaseManager {
         seerResult: null,
         witchHeal: false,
         witchPoisonTarget: null,
+        cupidPair: null,
         saved: [],
       };
     });
@@ -532,6 +536,17 @@ export class PhaseManager {
     const seerResult = state.seerTarget
       ? GameEngine.getSeerResult(state, state.seerTarget)
       : null;
+    const cupidPair =
+      state.round === 1 && state.cupidTargetIds
+        ? {
+            first:
+              this.resolveUsername(state, state.cupidTargetIds[0]) ??
+              state.cupidTargetIds[0],
+            second:
+              this.resolveUsername(state, state.cupidTargetIds[1]) ??
+              state.cupidTargetIds[1],
+          }
+        : null;
 
     return {
       type: 'night_result',
@@ -542,6 +557,7 @@ export class PhaseManager {
       seerResult,
       witchHeal: !!state.witch.healTarget,
       witchPoisonTarget: this.resolveUsername(state, state.witch.poisonTarget),
+      cupidPair,
       deaths: result.deaths.map((d) => ({
         username: state.players.find((p) => p.id === d.playerId)?.username ?? d.playerId,
         cause: d.cause,
@@ -625,6 +641,7 @@ export class PhaseManager {
       players: this.serializePlayersForSocket(roomPlayers, playerId),
       timer: state?.timerInfo,
       nightPrompt,
+      nightResult: state?.lastNightResult ?? null,
       hunterDeathShooting:
         state?.hunterShooting === true &&
         player.role === 'hunter' &&
@@ -663,6 +680,7 @@ export class PhaseManager {
       gameStarted: room.gameStarted === true,
       players: state?.players ?? room.players,
       timer: state?.timerInfo,
+      gameLog: state?.gameLog ?? [],
       gmActionLog: state?.gmActionLog ?? [],
       winner: state?.winner,
       lovers: state?.lovers,
@@ -1009,15 +1027,18 @@ export class PhaseManager {
               : `Hôm qua không có người chết.`
           }`,
           timestamp: Date.now(),
+          gameLog: state.gameLog,
         });
       }
 
-      this.emitToAllPlayers(roomId, 'game:nightResult', {
+      state.lastNightResult = {
         diedPlayerIds,
         deaths: result.deaths,
         cause: result.deaths.length > 0 ? result.deaths[0].cause : 'protected',
         gameLog: this.serializeGameLogForPlayer(state),
-      });
+      };
+
+      this.emitToAllPlayers(roomId, 'game:nightResult', state.lastNightResult);
 
       // --- Check if hunter was killed at night → block phase transition ---
       const deadHunter = result.deaths.find(
@@ -1033,6 +1054,7 @@ export class PhaseManager {
           this.emitToGM(roomId, state.gmRoomId, 'gm:hunterAction', {
             type: 'hunterDied',
             message: `Thợ săn đã chết trong đêm. Chờ thợ săn bắn hoặc bỏ qua.`,
+            gameLog: state.gameLog,
           });
         }
 
@@ -1102,19 +1124,20 @@ export class PhaseManager {
     state.gameLog.push({
       type: 'voting_result',
       round: state.round,
-      votes: Object.entries(state.votes).map(([voterId, targetId]) => ({
-        voter: state.players.find((p) => p.id === voterId)?.username ?? voterId,
-        target:
-          state.players.find((p) => p.id === targetId)?.username ?? targetId,
+      votes: votingResultPayload.votes.map((vote) => ({
+        voter: vote.voterName,
+        target: vote.targetName,
+        kind: vote.kind,
       })),
-      eliminatedPlayer: result.eliminatedPlayerId
-        ? (state.players.find((p) => p.id === result.eliminatedPlayerId)
-            ?.username ?? null)
-        : null,
+      eliminatedPlayer: votingResultPayload.eliminatedPlayerName,
       cause: result.cause,
-      tiedPlayers: result.tiedPlayerIds?.map(
-        (id) => state.players.find((p) => p.id === id)?.username ?? id,
+      tiedPlayers: votingResultPayload.tiedPlayers?.map(
+        (player) => player.username,
       ),
+      abstainCount: votingResultPayload.abstainCount,
+      timeoutCount: votingResultPayload.timeoutCount,
+      targetVoteCount: votingResultPayload.targetVoteCount,
+      totalVoters: votingResultPayload.totalVoters,
     });
 
     // Tanner wins immediately
@@ -1163,6 +1186,7 @@ export class PhaseManager {
           type: 'gameEnded',
           message: `Trò chơi kết thúc. Chán đời thắng khi bị vote chết!`,
           winner: 'tanner',
+          gameLog: state.gameLog,
         });
       }
       return;
@@ -1189,6 +1213,7 @@ export class PhaseManager {
         this.emitToGM(roomId, state.gmRoomId, 'gm:votingAction', {
           type: 'votingAction',
           message,
+          gameLog: state.gameLog,
         });
       }
 
@@ -1236,6 +1261,7 @@ export class PhaseManager {
         this.emitToGM(roomId, state.gmRoomId, 'gm:hunterAction', {
           type: 'hunterDied',
           message: 'Thợ săn bị loại do bỏ phiếu. Chờ thợ săn bắn hoặc bỏ qua.',
+          gameLog: state.gameLog,
         });
       }
       GameEngine.resetVotingState(state);
@@ -1252,6 +1278,7 @@ export class PhaseManager {
       this.emitToGM(roomId, state.gmRoomId, 'gm:votingAction', {
         type: 'votingAction',
         message: `Người chơi ${eliminated?.username} bị loại.`,
+        gameLog: state.gameLog,
       });
     }
 
@@ -1585,6 +1612,7 @@ export class PhaseManager {
           type: 'gameEnded',
           message: `Trò chơi kết thúc. ${winnerDisplayName} thắng!`,
           winner,
+          gameLog: state.gameLog,
         });
       }
     }
@@ -1733,6 +1761,7 @@ export class PhaseManager {
         type: 'hunterShot',
         message: `Thợ săn đã bắn ${target?.username}.`,
         targetId,
+        gameLog: state.gameLog,
       });
     }
 
@@ -1803,6 +1832,7 @@ export class PhaseManager {
         this.emitToGM(roomId, state.gmRoomId, 'gm:hunterAction', {
           type: 'hunterSkipped',
           message: `Thợ săn đã bỏ qua lượt bắn.`,
+          gameLog: state.gameLog,
         });
       }
 
@@ -1868,14 +1898,51 @@ export class PhaseManager {
     }
 
     if (state.hunterShooting && player.role === 'hunter') {
+      const context = state.hunterDeathContext;
       state.gameLog.push({
         type: 'hunter_shot',
         round: state.round,
         hunter: player.username,
         target: null,
       });
+
+      this.emitToAllPlayers(roomId, 'game:hunterShot', {
+        hunterId: player.id,
+        targetId: null,
+        additionalDeaths: [],
+        gameLog: this.serializeGameLogForPlayer(state),
+      });
+
+      if (state.gmRoomId) {
+        this.emitToGM(roomId, state.gmRoomId, 'gm:hunterAction', {
+          type: 'hunterSkipped',
+          message: `Thợ săn ${player.username} đã rời phòng nên lượt bắn bị bỏ qua.`,
+          gameLog: state.gameLog,
+        });
+      }
+
       state.hunterShooting = false;
       state.hunterDeathContext = undefined;
+      this.syncPlayerStatus(roomId);
+
+      const winner = this.checkWinCondition(roomId);
+      if (!winner) {
+        const generation = this.getRoomGeneration(roomId);
+        void this.delayFn(3000).then(
+          () => {
+            if (!this.isCurrentGeneration(roomId, generation)) return;
+            if (context === 'night') {
+              this.startDayPhase(roomId);
+            } else {
+              void this.startNightPhase(roomId);
+            }
+          },
+          () => {
+            // Ignore errors from phase transition (will be logged elsewhere)
+          },
+        );
+      }
+      return;
     }
 
     this.syncPlayerStatus(roomId);
@@ -1971,6 +2038,7 @@ export class PhaseManager {
     roomId: string,
     persistentId: string,
     newSocketId: string,
+    previousSocketId?: string,
   ): void {
     const state = this.gameStates.get(roomId);
     if (!state) return;
@@ -1980,7 +2048,7 @@ export class PhaseManager {
     );
     if (!player) return;
 
-    const oldSocketId = player.id;
+    const oldSocketId = previousSocketId ?? player.id;
     player.id = newSocketId;
 
     if (oldSocketId === newSocketId) return;
