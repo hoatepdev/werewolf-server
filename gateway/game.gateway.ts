@@ -382,23 +382,26 @@ export class GameGateway implements OnGatewayInit, OnGatewayDisconnect {
       return;
     }
 
-    const player: Player | null = this.roomService.rejoinPlayer(
+    const rejoinResult = this.roomService.rejoinPlayer(
       data.roomCode,
       socket.id,
       data.persistentPlayerId,
     );
-    if (!player) {
+    if (!rejoinResult) {
       socket.emit('player:rejoinRoomError', {
         message: 'Không tìm thấy người chơi trong phòng này.',
       });
       return;
     }
 
+    const { player, oldSocketId } = rejoinResult;
+
     await socket.join(data.roomCode);
     this.phaseManager.updatePlayerSocketId(
       data.roomCode,
       data.persistentPlayerId,
       socket.id,
+      oldSocketId,
     );
     const players = this.roomService.getPlayers(data.roomCode);
     const currentPlayer = players.find((p) => p.id === socket.id);
@@ -411,12 +414,14 @@ export class GameGateway implements OnGatewayInit, OnGatewayDisconnect {
       alive: currentPlayer?.alive ?? null,
     });
 
-    // Sync timer state if a countdown is active
+    // Sync timer state if a countdown is active, otherwise clear stale client timers.
     const timerInfo: TimerInfo | undefined = this.phaseManager.getTimerInfo(
       data.roomCode,
     );
     if (timerInfo) {
       socket.emit('game:timerSync', timerInfo);
+    } else {
+      socket.emit('game:timerStop', {});
     }
 
     const votingProgress = this.phaseManager.getVotingProgress(data.roomCode);

@@ -275,7 +275,10 @@ describe('GameGateway', () => {
       const currentPlayer = room.players[1];
       setServerMock(gateway);
       (roomService.validateReconnectToken as jest.Mock).mockReturnValue(true);
-      (roomService.rejoinPlayer as jest.Mock).mockReturnValue(currentPlayer);
+      (roomService.rejoinPlayer as jest.Mock).mockReturnValue({
+        player: currentPlayer,
+        oldSocketId: 'old-socket',
+      });
       (roomService.getPlayers as jest.Mock).mockReturnValue(room.players);
       (roomService.getRoom as jest.Mock).mockReturnValue(room);
       (phaseManager.getPhase as jest.Mock).mockReturnValue('night');
@@ -744,7 +747,10 @@ describe('GameGateway', () => {
         alive: true,
         persistentId: 'pid-1',
       };
-      (roomService.rejoinPlayer as jest.Mock).mockReturnValue(mockPlayer);
+      (roomService.rejoinPlayer as jest.Mock).mockReturnValue({
+        player: mockPlayer,
+        oldSocketId: 'old-socket',
+      });
       (roomService.getPlayers as jest.Mock).mockReturnValue([mockPlayer]);
       (roomService.validateReconnectToken as jest.Mock).mockReturnValue(true);
       (phaseManager.getPhase as jest.Mock).mockReturnValue('voting');
@@ -774,6 +780,7 @@ describe('GameGateway', () => {
         '234567',
         'pid-1',
         'new-socket',
+        'old-socket',
       );
       expect(socket.join).toHaveBeenCalledWith('234567');
       expect(socket.emit).toHaveBeenCalledWith(

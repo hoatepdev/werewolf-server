@@ -1971,6 +1971,7 @@ export class PhaseManager {
     roomId: string,
     persistentId: string,
     newSocketId: string,
+    previousSocketId?: string,
   ): void {
     const state = this.gameStates.get(roomId);
     if (!state) return;
@@ -1980,7 +1981,7 @@ export class PhaseManager {
     );
     if (!player) return;
 
-    const oldSocketId = player.id;
+    const oldSocketId = previousSocketId ?? player.id;
     player.id = newSocketId;
 
     if (oldSocketId === newSocketId) return;
