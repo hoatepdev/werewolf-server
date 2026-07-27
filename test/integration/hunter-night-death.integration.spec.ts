@@ -368,6 +368,46 @@ describe('Hunter Night-Death Feature', () => {
       expect(shotLog).toBeDefined();
       expect(shotLog.target).toBeNull();
     });
+
+    it('creates and broadcasts a hunter_shot skip log when hunter leaves while shooting', () => {
+      resolveWithWolvesKillingHunter();
+      mockServer.reset();
+
+      phaseManager.handlePlayerLeave(roomId, 'socket-p8');
+
+      const state = phaseManager.getGameStateForTest(roomId)!;
+      const shotLog = state.gameLog.find(
+        (e) => e.type === 'hunter_shot',
+      ) as any;
+      expect(shotLog).toMatchObject({
+        type: 'hunter_shot',
+        hunter: 'Hunter',
+        target: null,
+      });
+      mockServer.expectEmitted('game:hunterShot', {
+        hunterId: 'socket-p8',
+        targetId: null,
+      });
+      const playerEvent = mockServer.emits.find(
+        (e) => e.event === 'game:hunterShot',
+      );
+      expect((playerEvent?.payload as any).gameLog).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ type: 'hunter_shot', target: null }),
+        ]),
+      );
+      mockServer.expectEmittedTo('gm-room-123', 'gm:hunterAction', {
+        type: 'hunterSkipped',
+      });
+      const gmEvent = mockServer.emits.find(
+        (e) => e.room === 'gm-room-123' && e.event === 'gm:hunterAction',
+      );
+      expect((gmEvent?.payload as any).gameLog).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ type: 'hunter_shot', target: null }),
+        ]),
+      );
+    });
   });
 
   // ── 9. game:hunterShot emitted after actual shot ──────────────────────────────
@@ -384,13 +424,16 @@ describe('Hunter Night-Death Feature', () => {
       });
     });
 
-    it('does NOT emit game:hunterShot when hunter skips', () => {
+    it('emits game:hunterShot with null targetId when hunter skips', () => {
       resolveWithWolvesKillingHunter();
       mockServer.reset();
 
       phaseManager.handleHunterDeathShoot(roomId, 'socket-p8', undefined);
 
-      mockServer.expectNotEmitted('game:hunterShot');
+      mockServer.expectEmitted('game:hunterShot', {
+        hunterId: 'socket-p8',
+        targetId: null,
+      });
     });
   });
 

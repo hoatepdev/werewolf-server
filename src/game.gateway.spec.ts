@@ -145,6 +145,8 @@ describe('GameGateway', () => {
       getTimerInfo: jest.fn(),
       getVotingProgress: jest.fn(),
       getPlayerVotingState: jest.fn(),
+      getPlayerStateSnapshot: jest.fn(),
+      getGmStateSnapshot: jest.fn(),
       eliminatePlayer: jest.fn(),
       revivePlayer: jest.fn(),
       updatePlayerSocketId: jest.fn(),
@@ -520,6 +522,96 @@ describe('GameGateway', () => {
       expect(socket.join).not.toHaveBeenCalled();
       expect(roomService.setGmRoomId).not.toHaveBeenCalled();
       expect(phaseManager.setGmRoom).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('state sync snapshots', () => {
+    it('emits player state snapshots with gameLog for valid reconnect tokens', () => {
+      const socket = makeSocket('player-1');
+      const room = makeRoomWithSecretRoles();
+      const snapshot = {
+        roomCode: '123456',
+        serverTime: 1000,
+        phase: 'day',
+        round: 1,
+        gameStarted: true,
+        playerId: 'player-1',
+        alive: true,
+        players: [],
+        gameLog: [
+          {
+            type: 'night_result',
+            round: 1,
+            werewolfTarget: null,
+            bodyguardTarget: null,
+            seerTarget: null,
+            seerResult: null,
+            witchHeal: false,
+            witchPoisonTarget: null,
+            cupidPair: null,
+            deaths: [{ username: 'Villager1', cause: 'werewolf' }],
+            saved: [],
+          },
+        ],
+      };
+      (roomService.validateReconnectToken as jest.Mock).mockReturnValue(true);
+      (roomService.getRoom as jest.Mock).mockReturnValue(room);
+      (phaseManager.getPlayerStateSnapshot as jest.Mock).mockReturnValue(snapshot);
+
+      gateway['handlePlayerSyncState'](socket, {
+        roomCode: '123456',
+        persistentPlayerId: 'pid-1',
+        reconnectToken: 'token-1',
+      });
+
+      expect(phaseManager.getPlayerStateSnapshot).toHaveBeenCalledWith(
+        '123456',
+        'player-1',
+      );
+      expect(socket.emit).toHaveBeenCalledWith('player:stateSnapshot', snapshot);
+      expect(socket.emit).toHaveBeenCalledWith('game:timerStop', {});
+    });
+
+    it('emits GM state snapshots with gameLog and gmActionLog', () => {
+      const socket = makeSocket('gm-socket');
+      const room = makeRoomWithSecretRoles();
+      const snapshot = {
+        roomCode: '123456',
+        serverTime: 1000,
+        phase: 'day',
+        round: 1,
+        gameStarted: true,
+        players: room.players,
+        gameLog: [
+          {
+            type: 'voting_result',
+            round: 1,
+            votes: [{ voter: 'Player 1', target: 'Player 2' }],
+            eliminatedPlayer: 'Player 2',
+            cause: 'vote',
+          },
+        ],
+        gmActionLog: [
+          {
+            type: 'votingAction',
+            message: 'Người chơi Player 2 bị loại.',
+            timestamp: 1000,
+          },
+        ],
+      };
+      (roomService.getRoom as jest.Mock).mockReturnValue(room);
+      (phaseManager.getGmStateSnapshot as jest.Mock).mockReturnValue(snapshot);
+      (phaseManager.getVotingProgress as jest.Mock).mockReturnValue(undefined);
+
+      gateway['handleGmSyncState'](socket, {
+        roomCode: '123456',
+        gmPersistentId: 'gm-pid',
+        gmReconnectToken: 'gm-token',
+      });
+
+      expect(phaseManager.getGmStateSnapshot).toHaveBeenCalledWith('123456');
+      expect(socket.emit).toHaveBeenCalledWith('gm:stateSnapshot', snapshot);
+      expect(socket.emit).toHaveBeenCalledWith('game:timerStop', {});
     });
   });
 

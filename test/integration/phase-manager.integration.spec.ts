@@ -213,6 +213,70 @@ describe('PhaseManager Integration', () => {
       });
       expect(state.phase).toBe('conclude');
       expect(Object.keys(state.votes)).toHaveLength(0);
+
+      const votingLog = state.gameLog.find((e) => e.type === 'voting_result');
+      expect(votingLog).toMatchObject({
+        type: 'voting_result',
+        abstainCount: alivePlayers.length,
+        timeoutCount: 0,
+        targetVoteCount: 0,
+        totalVoters: alivePlayers.length,
+      });
+      expect(votingLog?.votes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            voter: 'Wolf1',
+            target: null,
+            kind: 'abstain',
+          }),
+        ]),
+      );
+    });
+
+    it('should record timeout votes in the voting log', () => {
+      phaseManager.startVotingPhase(roomId);
+
+      const state = phaseManager.getGameStateForTest(roomId)!;
+      const alivePlayers = state.players.filter((p) => p.alive);
+
+      phaseManager.handleVotingResponse(roomId, 'socket-p1', {
+        choice: 'target',
+        targetId: 'socket-p7',
+      });
+      phaseManager.handleVotingResponse(roomId, 'socket-p2', {
+        choice: 'abstain',
+        targetId: null,
+      });
+
+      (phaseManager as any).handleVoting(roomId);
+
+      const votingLog = state.gameLog.find((e) => e.type === 'voting_result');
+      expect(votingLog).toMatchObject({
+        type: 'voting_result',
+        abstainCount: 1,
+        timeoutCount: alivePlayers.length - 2,
+        targetVoteCount: 1,
+        totalVoters: alivePlayers.length,
+      });
+      expect(votingLog?.votes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            voter: 'Wolf1',
+            target: 'Villager2',
+            kind: 'target',
+          }),
+          expect.objectContaining({
+            voter: 'Wolf2',
+            target: null,
+            kind: 'abstain',
+          }),
+          expect.objectContaining({
+            voter: 'Seer',
+            target: null,
+            kind: 'timeout',
+          }),
+        ]),
+      );
     });
 
     it('should record votes and trigger phase resolution when all players vote', () => {
@@ -591,6 +655,37 @@ describe('PhaseManager — full night cycle (zero-delay)', () => {
       witchHeal: true,
       witchPoisonTarget: 'Villager2',
     });
+
+    const playerSnapshot = phaseManager.getPlayerStateSnapshot(roomId, 'socket-p6');
+    const playerNightLog = playerSnapshot?.gameLog?.find(
+      (entry) => entry.type === 'night_result',
+    );
+    expect(playerNightLog).toMatchObject({
+      type: 'night_result',
+      werewolfTarget: null,
+      bodyguardTarget: null,
+      seerTarget: null,
+      seerResult: null,
+      witchHeal: false,
+      witchPoisonTarget: null,
+      cupidPair: null,
+      saved: [],
+    });
+
+    const gmSnapshot = phaseManager.getGmStateSnapshot(roomId);
+    const gmNightLog = gmSnapshot?.gameLog.find(
+      (entry) => entry.type === 'night_result',
+    );
+    expect(gmNightLog).toMatchObject({
+      type: 'night_result',
+      witchHeal: true,
+      witchPoisonTarget: 'Villager2',
+    });
+    expect(gmSnapshot?.gmActionLog).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: 'nightAction' }),
+      ]),
+    );
   });
 
   it('should advance round counter after each night phase', async () => {
