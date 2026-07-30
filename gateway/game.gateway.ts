@@ -173,6 +173,10 @@ export class GameGateway implements OnGatewayInit, OnGatewayDisconnect {
     return RoomService.isValidRoomCode(data?.roomCode);
   }
 
+  private validatePositiveNumber(value: unknown): value is number {
+    return typeof value === 'number' && Number.isFinite(value) && value > 0;
+  }
+
   @SubscribeMessage('rq_gm:createRoom')
   async handleCreateRoom(
     @ConnectedSocket() socket: Socket,
@@ -1290,6 +1294,76 @@ export class GameGateway implements OnGatewayInit, OnGatewayDisconnect {
       this.roomService.getGmRoomId(data.roomCode) ?? data.roomCode,
     );
     this.server.to(data.roomCode).emit('room:readySuccess');
+  }
+
+  @SubscribeMessage('rq_gm:dayTimerControl')
+  handleDayTimerControl(
+    @ConnectedSocket() socket: Socket,
+    @MessageBody()
+    data: {
+      roomCode: string;
+      action: 'start' | 'extend' | 'skip';
+      durationMs?: number;
+      deltaMs?: number;
+    },
+  ) {
+    if (!this.validateRoomCode(data)) {
+      return {
+        success: false,
+        status: 'invalid_data',
+        message: 'Mã phòng không hợp lệ.',
+      };
+    }
+    if (!this.isHost(socket, data.roomCode)) {
+      const ack = {
+        success: false,
+        status: 'not_authorized',
+        message: 'Not authorized.',
+      };
+      socket.emit('gm:dayTimerControlError', { message: ack.message });
+      return ack;
+    }
+
+    if (data.action === 'start') {
+      if (
+        data.durationMs !== undefined &&
+        !this.validatePositiveNumber(data.durationMs)
+      ) {
+        return {
+          success: false,
+          status: 'invalid_data',
+          message: 'Thời lượng thảo luận không hợp lệ.',
+        };
+      }
+      return this.phaseManager.startDayDiscussionTimer(
+        data.roomCode,
+        data.durationMs,
+      );
+    }
+
+    if (data.action === 'extend') {
+      if (!this.validatePositiveNumber(data.deltaMs)) {
+        return {
+          success: false,
+          status: 'invalid_data',
+          message: 'Thời gian gia hạn không hợp lệ.',
+        };
+      }
+      return this.phaseManager.extendDayDiscussionTimer(
+        data.roomCode,
+        data.deltaMs,
+      );
+    }
+
+    if (data.action === 'skip') {
+      return this.phaseManager.skipDayDiscussionTimer(data.roomCode);
+    }
+
+    return {
+      success: false,
+      status: 'invalid_data',
+      message: 'Lệnh timer không hợp lệ.',
+    };
   }
 
   @SubscribeMessage('rq_gm:nextPhase')

@@ -1,7 +1,14 @@
 import { Phase, Player } from '../types';
 
 export interface TimerInfo {
-  context: 'cupid' | 'bodyguard' | 'werewolf' | 'witch' | 'seer' | 'voting';
+  context:
+    | 'cupid'
+    | 'bodyguard'
+    | 'werewolf'
+    | 'witch'
+    | 'seer'
+    | 'day'
+    | 'voting';
   durationMs: number;
   deadline: number;
 }

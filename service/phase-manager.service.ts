@@ -38,6 +38,13 @@ export interface VotingSubmissionAck {
   progress?: VotingProgressPayload;
 }
 
+export interface DayTimerControlResult {
+  success: boolean;
+  status: 'ok' | 'invalid_data' | 'room_not_found' | 'invalid_state';
+  message: string;
+  timer?: TimerInfo;
+}
+
 export interface NightPromptSnapshot {
   type: 'werewolf' | 'seer' | 'witch' | 'bodyguard' | 'hunter' | 'cupid';
   message: string;
@@ -141,6 +148,11 @@ export class PhaseManager {
     process.env.NODE_ENV === 'test'
       ? { cupid: 100, bodyguard: 100, werewolf: 100, witch: 100, seer: 100 }
       : { cupid: 30000, bodyguard: 15000, werewolf: 60000, witch: 30000, seer: 15000 };
+
+  private readonly DAY_DISCUSSION_DURATION_MS =
+    process.env.NODE_ENV === 'test' ? 1000 : 3 * 60 * 1000;
+  private readonly MAX_DAY_DISCUSSION_DURATION_MS = 10 * 60 * 1000;
+  private readonly MAX_DAY_DISCUSSION_EXTENSION_MS = 5 * 60 * 1000;
 
   protected delayFn: (ms: number) => Promise<void> = (ms) =>
     new Promise((resolve) => {
@@ -469,6 +481,51 @@ export class PhaseManager {
     };
     this.emitToAllPlayers(roomId, 'voting:result', payloadWithGameLog);
     this.emitToAllPlayers(roomId, 'votingResult', payloadWithGameLog);
+  }
+
+  private clearActiveTimer(roomId: string, state: GameState): void {
+    if (state.phaseTimeout) {
+      clearTimeout(state.phaseTimeout);
+      state.phaseTimeout = undefined;
+    }
+    state.timerInfo = undefined;
+    this.emitToAllPlayers(roomId, 'game:timerStop', {});
+  }
+
+  private isValidDuration(value: number, maxMs: number): boolean {
+    return Number.isFinite(value) && value > 0 && value <= maxMs;
+  }
+
+  private scheduleDayTimer(
+    roomId: string,
+    state: GameState,
+    deadline: number,
+    generation: number,
+  ): void {
+    if (state.phaseTimeout) clearTimeout(state.phaseTimeout);
+
+    const timeoutMs = Math.max(deadline - Date.now(), 0);
+    state.phaseTimeout = setTimeout(() => {
+      const currentState = this.gameStates.get(roomId);
+      if (
+        !currentState ||
+        !this.isCurrentGeneration(roomId, generation) ||
+        currentState.phase !== 'day' ||
+        currentState.timerInfo?.context !== 'day' ||
+        currentState.timerInfo.deadline !== deadline
+      ) {
+        return;
+      }
+
+      this.clearActiveTimer(roomId, currentState);
+      this.emitGmLog(roomId, 'gm:votingAction', {
+        type: 'votingAction',
+        message: 'Hết giờ thảo luận. Tự động chuyển sang bỏ phiếu.',
+        timestamp: Date.now(),
+      });
+      this.startVotingPhase(roomId);
+    }, timeoutMs);
+    state.phaseTimeout.unref?.();
   }
 
   // --- State sync ---
@@ -1298,6 +1355,144 @@ export class PhaseManager {
     }
   }
 
+  // --- Day discussion timer ---
+
+  startDayDiscussionTimer(
+    roomId: string,
+    durationMs = this.DAY_DISCUSSION_DURATION_MS,
+  ): DayTimerControlResult {
+    const state = this.gameStates.get(roomId);
+    if (!state) {
+      return {
+        success: false,
+        status: 'room_not_found',
+        message: 'Không tìm thấy phòng.',
+      };
+    }
+    if (state.phase !== 'day') {
+      return {
+        success: false,
+        status: 'invalid_state',
+        message: 'Chỉ có thể bắt đầu hẹn giờ trong giai đoạn ban ngày.',
+      };
+    }
+    if (state.timerInfo?.context === 'day') {
+      return {
+        success: false,
+        status: 'invalid_state',
+        message: 'Timer thảo luận đang chạy.',
+        timer: state.timerInfo,
+      };
+    }
+    if (!this.isValidDuration(durationMs, this.MAX_DAY_DISCUSSION_DURATION_MS)) {
+      return {
+        success: false,
+        status: 'invalid_data',
+        message: 'Thời lượng thảo luận không hợp lệ.',
+      };
+    }
+
+    const deadline = Date.now() + durationMs;
+    const timer: TimerInfo = { context: 'day', durationMs, deadline };
+    state.timerInfo = timer;
+    this.scheduleDayTimer(roomId, state, deadline, this.getRoomGeneration(roomId));
+
+    this.emitToAllPlayers(roomId, 'game:timerStart', timer);
+    this.emitGmLog(roomId, 'gm:votingAction', {
+      type: 'votingAction',
+      message: `Bắt đầu ${Math.round(durationMs / 1000)} giây thảo luận ban ngày.`,
+      timestamp: Date.now(),
+    });
+
+    return {
+      success: true,
+      status: 'ok',
+      message: 'Đã bắt đầu timer thảo luận.',
+      timer,
+    };
+  }
+
+  extendDayDiscussionTimer(
+    roomId: string,
+    deltaMs: number,
+  ): DayTimerControlResult {
+    const state = this.gameStates.get(roomId);
+    if (!state) {
+      return {
+        success: false,
+        status: 'room_not_found',
+        message: 'Không tìm thấy phòng.',
+      };
+    }
+    if (state.phase !== 'day' || state.timerInfo?.context !== 'day') {
+      return {
+        success: false,
+        status: 'invalid_state',
+        message: 'Chưa có timer thảo luận để gia hạn.',
+      };
+    }
+    if (!this.isValidDuration(deltaMs, this.MAX_DAY_DISCUSSION_EXTENSION_MS)) {
+      return {
+        success: false,
+        status: 'invalid_data',
+        message: 'Thời gian gia hạn không hợp lệ.',
+      };
+    }
+
+    const remainingMs = Math.max(state.timerInfo.deadline - Date.now(), 0);
+    const durationMs = remainingMs + deltaMs;
+    const deadline = Date.now() + durationMs;
+    const timer: TimerInfo = { context: 'day', durationMs, deadline };
+    state.timerInfo = timer;
+    this.scheduleDayTimer(roomId, state, deadline, this.getRoomGeneration(roomId));
+
+    this.emitToAllPlayers(roomId, 'game:timerSync', timer);
+    this.emitGmLog(roomId, 'gm:votingAction', {
+      type: 'votingAction',
+      message: `Gia hạn thảo luận thêm ${Math.round(deltaMs / 1000)} giây.`,
+      timestamp: Date.now(),
+    });
+
+    return {
+      success: true,
+      status: 'ok',
+      message: 'Đã gia hạn timer thảo luận.',
+      timer,
+    };
+  }
+
+  skipDayDiscussionTimer(roomId: string): DayTimerControlResult {
+    const state = this.gameStates.get(roomId);
+    if (!state) {
+      return {
+        success: false,
+        status: 'room_not_found',
+        message: 'Không tìm thấy phòng.',
+      };
+    }
+    if (state.phase !== 'day') {
+      return {
+        success: false,
+        status: 'invalid_state',
+        message: 'Chỉ có thể kết thúc thảo luận trong giai đoạn ban ngày.',
+      };
+    }
+
+    this.clearActiveTimer(roomId, state);
+    this.emitGmLog(roomId, 'gm:votingAction', {
+      type: 'votingAction',
+      message: 'GM kết thúc thảo luận và chuyển sang bỏ phiếu.',
+      timestamp: Date.now(),
+    });
+    this.startVotingPhase(roomId);
+
+    return {
+      success: true,
+      status: 'ok',
+      message: 'Đã kết thúc thảo luận và chuyển sang bỏ phiếu.',
+    };
+  }
+
   // --- Phase transitions ---
 
   async startNightPhase(roomId: string) {
@@ -1431,6 +1626,10 @@ export class PhaseManager {
     try {
       const state = this.gameStates.get(roomId);
       if (!state) return;
+
+      if (state.timerInfo?.context === 'day' || state.phaseTimeout) {
+        this.clearActiveTimer(roomId, state);
+      }
 
       state.phase = 'voting';
       state.lastVotingResult = undefined;

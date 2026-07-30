@@ -151,10 +151,7 @@ describe('RoomService', () => {
     });
 
     it('should return false for unknown room code', () => {
-      const result = service.addPlayer(
-        '999999',
-        makePlayer({ id: 'p1' }),
-      );
+      const result = service.addPlayer('999999', makePlayer({ id: 'p1' }));
       expect(result).toBe(false);
     });
   });
@@ -211,11 +208,7 @@ describe('RoomService', () => {
     });
 
     it('should return null for unknown room code', () => {
-      const player = service.rejoinPlayer(
-        '999999',
-        'new-socket',
-        'pid-1',
-      );
+      const player = service.rejoinPlayer('999999', 'new-socket', 'pid-1');
       expect(player).toBeNull();
     });
   });

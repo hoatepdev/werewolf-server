@@ -155,6 +155,9 @@ describe('GameGateway', () => {
       handlePlayerLeave: jest.fn(),
       updatePlayerInfo: jest.fn(),
       resetRoomState: jest.fn(),
+      startDayDiscussionTimer: jest.fn(),
+      extendDayDiscussionTimer: jest.fn(),
+      skipDayDiscussionTimer: jest.fn(),
     } as unknown as PhaseManager;
 
     (roomService.issueGmReconnectToken as jest.Mock).mockReturnValue(
@@ -367,10 +370,7 @@ describe('GameGateway', () => {
 
       expect(socket.join).toHaveBeenCalledWith('123456');
       expect(socket.join).toHaveBeenCalledWith('gm-room');
-      expect(roomService.setGmRoomId).toHaveBeenCalledWith(
-        '123456',
-        'gm-room',
-      );
+      expect(roomService.setGmRoomId).toHaveBeenCalledWith('123456', 'gm-room');
       expect(phaseManager.setGmRoom).toHaveBeenCalledWith('123456', 'gm-room');
       expect(socket.emit).toHaveBeenCalledWith('gm:connected', {
         roomCode: '123456',
@@ -556,7 +556,9 @@ describe('GameGateway', () => {
       };
       (roomService.validateReconnectToken as jest.Mock).mockReturnValue(true);
       (roomService.getRoom as jest.Mock).mockReturnValue(room);
-      (phaseManager.getPlayerStateSnapshot as jest.Mock).mockReturnValue(snapshot);
+      (phaseManager.getPlayerStateSnapshot as jest.Mock).mockReturnValue(
+        snapshot,
+      );
 
       gateway['handlePlayerSyncState'](socket, {
         roomCode: '123456',
@@ -568,7 +570,10 @@ describe('GameGateway', () => {
         '123456',
         'player-1',
       );
-      expect(socket.emit).toHaveBeenCalledWith('player:stateSnapshot', snapshot);
+      expect(socket.emit).toHaveBeenCalledWith(
+        'player:stateSnapshot',
+        snapshot,
+      );
       expect(socket.emit).toHaveBeenCalledWith('game:timerStop', {});
     });
 
@@ -1360,6 +1365,125 @@ describe('GameGateway', () => {
       expect(targets.get('123456')?.emit).not.toHaveBeenCalledWith(
         'room:readySuccess',
       );
+    });
+  });
+
+  describe('rq_gm:dayTimerControl', () => {
+    beforeEach(() => {
+      (roomService.getRoom as jest.Mock).mockReturnValue({
+        hostId: 'gm-socket',
+        players: [],
+        phase: 'day',
+        round: 1,
+        actions: [],
+        lastActivityAt: Date.now(),
+      });
+    });
+
+    it('should start the day timer for the GM', () => {
+      const socket = makeSocket('gm-socket');
+      (phaseManager.startDayDiscussionTimer as jest.Mock).mockReturnValue({
+        success: true,
+        status: 'ok',
+        message: 'Đã bắt đầu timer thảo luận.',
+      });
+
+      const result = gateway['handleDayTimerControl'](socket, {
+        roomCode: '123456',
+        action: 'start',
+        durationMs: 180_000,
+      });
+
+      expect(phaseManager.startDayDiscussionTimer).toHaveBeenCalledWith(
+        '123456',
+        180_000,
+      );
+      expect(result).toEqual(expect.objectContaining({ success: true }));
+    });
+
+    it('should extend the day timer for the GM', () => {
+      const socket = makeSocket('gm-socket');
+      (phaseManager.extendDayDiscussionTimer as jest.Mock).mockReturnValue({
+        success: true,
+        status: 'ok',
+        message: 'Đã gia hạn timer thảo luận.',
+      });
+
+      gateway['handleDayTimerControl'](socket, {
+        roomCode: '123456',
+        action: 'extend',
+        deltaMs: 30_000,
+      });
+
+      expect(phaseManager.extendDayDiscussionTimer).toHaveBeenCalledWith(
+        '123456',
+        30_000,
+      );
+    });
+
+    it('should skip the day timer for the GM', () => {
+      const socket = makeSocket('gm-socket');
+      (phaseManager.skipDayDiscussionTimer as jest.Mock).mockReturnValue({
+        success: true,
+        status: 'ok',
+        message: 'Đã kết thúc thảo luận.',
+      });
+
+      gateway['handleDayTimerControl'](socket, {
+        roomCode: '123456',
+        action: 'skip',
+      });
+
+      expect(phaseManager.skipDayDiscussionTimer).toHaveBeenCalledWith(
+        '123456',
+      );
+    });
+
+    it('should reject non-host sockets', () => {
+      const socket = makeSocket('player-socket');
+
+      const result = gateway['handleDayTimerControl'](socket, {
+        roomCode: '123456',
+        action: 'start',
+      });
+
+      expect(result).toEqual(
+        expect.objectContaining({ success: false, status: 'not_authorized' }),
+      );
+      expect(phaseManager.startDayDiscussionTimer).not.toHaveBeenCalled();
+      expect(socket.emit).toHaveBeenCalledWith('gm:dayTimerControlError', {
+        message: 'Not authorized.',
+      });
+    });
+
+    it('should reject invalid timer payloads', () => {
+      const socket = makeSocket('gm-socket');
+
+      const startResult = gateway['handleDayTimerControl'](socket, {
+        roomCode: '123456',
+        action: 'start',
+        durationMs: -1,
+      });
+      const extendResult = gateway['handleDayTimerControl'](socket, {
+        roomCode: '123456',
+        action: 'extend',
+      });
+      const actionResult = gateway['handleDayTimerControl'](socket, {
+        roomCode: '123456',
+        action: 'unknown' as any,
+      });
+
+      expect(startResult).toEqual(
+        expect.objectContaining({ success: false, status: 'invalid_data' }),
+      );
+      expect(extendResult).toEqual(
+        expect.objectContaining({ success: false, status: 'invalid_data' }),
+      );
+      expect(actionResult).toEqual(
+        expect.objectContaining({ success: false, status: 'invalid_data' }),
+      );
+      expect(phaseManager.startDayDiscussionTimer).not.toHaveBeenCalled();
+      expect(phaseManager.extendDayDiscussionTimer).not.toHaveBeenCalled();
     });
   });
 

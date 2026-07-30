@@ -311,6 +311,90 @@ describe('PhaseManager Integration', () => {
     });
   });
 
+  // ── Day discussion timer ─────────────────────────────────────────────────────
+
+  describe('day discussion timer', () => {
+    beforeEach(() => {
+      const state = phaseManager.getGameStateForTest(roomId)!;
+      state.phase = 'day';
+      mockServer.reset();
+    });
+
+    it('should start a day timer and broadcast timer start', () => {
+      const result = phaseManager.startDayDiscussionTimer(roomId, 60_000);
+
+      expect(result).toEqual(
+        expect.objectContaining({ success: true, status: 'ok' }),
+      );
+      expect(phaseManager.getTimerInfo(roomId)).toEqual(
+        expect.objectContaining({ context: 'day', durationMs: 60_000 }),
+      );
+      mockServer.expectEmitted('game:timerStart', { context: 'day' });
+      mockServer.expectEmittedTo('gm-room-123', 'gm:votingAction');
+    });
+
+    it('should extend an active day timer and broadcast timer sync', () => {
+      phaseManager.startDayDiscussionTimer(roomId, 60_000);
+      const previousDeadline = phaseManager.getTimerInfo(roomId)!.deadline;
+      mockServer.reset();
+
+      const result = phaseManager.extendDayDiscussionTimer(roomId, 30_000);
+
+      expect(result).toEqual(
+        expect.objectContaining({ success: true, status: 'ok' }),
+      );
+      const timer = phaseManager.getTimerInfo(roomId)!;
+      expect(timer.context).toBe('day');
+      expect(timer.deadline).toBeGreaterThan(previousDeadline);
+      mockServer.expectEmitted('game:timerSync', { context: 'day' });
+    });
+
+    it('should skip day discussion and transition to voting', () => {
+      phaseManager.startDayDiscussionTimer(roomId, 60_000);
+      mockServer.reset();
+
+      const result = phaseManager.skipDayDiscussionTimer(roomId);
+
+      expect(result).toEqual(
+        expect.objectContaining({ success: true, status: 'ok' }),
+      );
+      const state = phaseManager.getGameStateForTest(roomId)!;
+      expect(state.phase).toBe('voting');
+      expect(state.timerInfo?.context).toBe('voting');
+      mockServer.expectEmitted('game:timerStop');
+      mockServer.expectEmitted('game:timerStart', { context: 'voting' });
+    });
+
+    it('should automatically transition to voting when the timer expires', () => {
+      jest.useFakeTimers();
+      try {
+        phaseManager.startDayDiscussionTimer(roomId, 100);
+
+        jest.advanceTimersByTime(100);
+
+        const state = phaseManager.getGameStateForTest(roomId)!;
+        expect(state.phase).toBe('voting');
+        expect(state.timerInfo?.context).toBe('voting');
+        mockServer.expectEmitted('game:timerStop');
+        mockServer.expectEmitted('game:timerStart', { context: 'voting' });
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it('should reject invalid day timer states', () => {
+      const state = phaseManager.getGameStateForTest(roomId)!;
+      state.phase = 'night';
+
+      expect(phaseManager.startDayDiscussionTimer(roomId)).toEqual(
+        expect.objectContaining({ success: false, status: 'invalid_state' }),
+      );
+      expect(phaseManager.extendDayDiscussionTimer(roomId, 30_000)).toEqual(
+        expect.objectContaining({ success: false, status: 'invalid_state' }),
+      );
+    });
+  });
+
   // ── Win conditions ───────────────────────────────────────────────────────────
 
   describe('checkWinCondition', () => {
@@ -656,7 +740,10 @@ describe('PhaseManager — full night cycle (zero-delay)', () => {
       witchPoisonTarget: 'Villager2',
     });
 
-    const playerSnapshot = phaseManager.getPlayerStateSnapshot(roomId, 'socket-p6');
+    const playerSnapshot = phaseManager.getPlayerStateSnapshot(
+      roomId,
+      'socket-p6',
+    );
     const playerNightLog = playerSnapshot?.gameLog?.find(
       (entry) => entry.type === 'night_result',
     );
