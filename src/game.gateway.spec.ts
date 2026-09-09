@@ -248,7 +248,7 @@ describe('GameGateway', () => {
 
       expect(roomService.getPlayers).not.toHaveBeenCalled();
       expect(socket.emit).toHaveBeenCalledWith('room:updatePlayersError', {
-        message: 'Not authorized.',
+        message: 'Không có quyền truy cập.',
       });
     });
 
@@ -375,7 +375,7 @@ describe('GameGateway', () => {
       expect(socket.emit).toHaveBeenCalledWith('gm:connected', {
         roomCode: '123456',
         gmRoomId: 'gm-room',
-        message: 'GM connected successfully',
+        message: 'GM đã kết nối thành công',
       });
       expect(socket.emit).toHaveBeenCalledWith(
         'room:updatePlayers',
@@ -436,7 +436,7 @@ describe('GameGateway', () => {
       expect(socket.emit).toHaveBeenCalledWith('gm:connected', {
         roomCode: '123456',
         gmRoomId: 'gm-room-new',
-        message: 'GM connected successfully',
+        message: 'GM đã kết nối thành công',
       });
     });
 
@@ -456,7 +456,7 @@ describe('GameGateway', () => {
       expect(roomService.setGmRoomId).not.toHaveBeenCalled();
       expect(phaseManager.setGmRoom).not.toHaveBeenCalled();
       expect(socket.emit).toHaveBeenCalledWith('gm:connectRoomError', {
-        message: 'Not authorized.',
+        message: 'Không có quyền truy cập.',
       });
       expect(socket.emit).not.toHaveBeenCalledWith(
         'gm:connected',
@@ -484,7 +484,7 @@ describe('GameGateway', () => {
       expect(roomService.setGmRoomId).not.toHaveBeenCalled();
       expect(phaseManager.setGmRoom).not.toHaveBeenCalled();
       expect(socket.emit).toHaveBeenCalledWith('gm:connectRoomError', {
-        message: 'Not authorized.',
+        message: 'Không có quyền truy cập.',
       });
     });
 
@@ -629,14 +629,20 @@ describe('GameGateway', () => {
         avatarKey: 1,
         gmPersistentId: 'gm-pid',
       });
-      expect(result1).toEqual({ success: false, message: 'Invalid data.' });
+      expect(result1).toEqual({
+        success: false,
+        message: 'Dữ liệu không hợp lệ.',
+      });
 
       const result2 = await gateway['handleCreateRoom'](socket, {
         username: 'GM',
         avatarKey: 'invalid' as any,
         gmPersistentId: 'gm-pid',
       });
-      expect(result2).toEqual({ success: false, message: 'Invalid data.' });
+      expect(result2).toEqual({
+        success: false,
+        message: 'Dữ liệu không hợp lệ.',
+      });
 
       const longName = 'a'.repeat(31);
       const result3 = await gateway['handleCreateRoom'](socket, {
@@ -644,14 +650,20 @@ describe('GameGateway', () => {
         avatarKey: 1,
         gmPersistentId: 'gm-pid',
       });
-      expect(result3).toEqual({ success: false, message: 'Invalid data.' });
+      expect(result3).toEqual({
+        success: false,
+        message: 'Dữ liệu không hợp lệ.',
+      });
 
       const result4 = await gateway['handleCreateRoom'](socket, {
         username: 'GM',
         avatarKey: 1,
         gmPersistentId: '',
       });
-      expect(result4).toEqual({ success: false, message: 'Invalid data.' });
+      expect(result4).toEqual({
+        success: false,
+        message: 'Dữ liệu không hợp lệ.',
+      });
     });
 
     it('should validate optional roomCode parameter', async () => {
@@ -667,7 +679,7 @@ describe('GameGateway', () => {
         });
         expect(result).toEqual({
           success: false,
-          message: 'Invalid room code.',
+          message: 'Mã phòng không hợp lệ.',
         });
       }
 
@@ -1012,7 +1024,7 @@ describe('GameGateway', () => {
 
       expect(roomService.approvePlayer).not.toHaveBeenCalled();
       expect(socket.emit).toHaveBeenCalledWith('room:approvePlayerError', {
-        message: 'Not authorized.',
+        message: 'Không có quyền truy cập.',
       });
     });
 
@@ -1084,7 +1096,7 @@ describe('GameGateway', () => {
       });
 
       expect(socket.emit).toHaveBeenCalledWith('room:rejectPlayerError', {
-        message: 'Not authorized.',
+        message: 'Không có quyền truy cập.',
       });
     });
 
@@ -1131,14 +1143,14 @@ describe('GameGateway', () => {
         roomCode: '',
         roles: [],
       });
-      expect(result1).toBe('Invalid data.');
+      expect(result1).toBe('Dữ liệu không hợp lệ.');
 
       // Invalid roles array (not an array)
       const result2 = gateway['handleRandomizeRoles'](socket, {
         roomCode: '123456',
         roles: 'not-array' as any,
       });
-      expect(result2).toBe('Invalid data.');
+      expect(result2).toBe('Dữ liệu không hợp lệ.');
     });
 
     it('should authorize that only host can randomize', () => {
@@ -1158,9 +1170,9 @@ describe('GameGateway', () => {
         roles: ['werewolf'],
       });
 
-      expect(result).toBe('Not authorized.');
+      expect(result).toBe('Không có quyền truy cập.');
       expect(socket.emit).toHaveBeenCalledWith('room:randomizeRolesError', {
-        message: 'Not authorized.',
+        message: 'Không có quyền truy cập.',
       });
     });
 
@@ -1181,7 +1193,7 @@ describe('GameGateway', () => {
         roles: ['villager', 'seer'],
       });
 
-      expect(result).toBe('Role list must include at least one werewolf');
+      expect(result).toBe('Danh sách vai phải có ít nhất một Sói');
     });
 
     it('should validate all provided roles are valid', () => {
@@ -1201,7 +1213,7 @@ describe('GameGateway', () => {
         roles: ['invalid-role' as Role],
       });
 
-      expect(result).toBe('Invalid roles provided');
+      expect(result).toBe('Danh sách vai không hợp lệ');
     });
 
     it('should accept cupid in randomized roles', () => {
@@ -1452,7 +1464,7 @@ describe('GameGateway', () => {
       );
       expect(phaseManager.startDayDiscussionTimer).not.toHaveBeenCalled();
       expect(socket.emit).toHaveBeenCalledWith('gm:dayTimerControlError', {
-        message: 'Not authorized.',
+        message: 'Không có quyền truy cập.',
       });
     });
 
@@ -1515,7 +1527,7 @@ describe('GameGateway', () => {
 
       expect(phaseManager.getPhase).not.toHaveBeenCalled();
       expect(socket.emit).toHaveBeenCalledWith('room:phaseError', {
-        message: 'Not authorized.',
+        message: 'Không có quyền truy cập.',
       });
     });
 

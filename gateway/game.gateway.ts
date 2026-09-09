@@ -194,13 +194,13 @@ export class GameGateway implements OnGatewayInit, OnGatewayDisconnect {
         !this.validateString(data.gmPersistentId, 64)) ||
       typeof data?.avatarKey !== 'number'
     ) {
-      return { success: false, message: 'Invalid data.' };
+      return { success: false, message: 'Dữ liệu không hợp lệ.' };
     }
     if (
       data.roomCode !== undefined &&
       !RoomService.isValidRoomCode(data.roomCode)
     ) {
-      return { success: false, message: 'Invalid room code.' };
+      return { success: false, message: 'Mã phòng không hợp lệ.' };
     }
 
     const room = this.roomService.createRoom(
@@ -250,7 +250,9 @@ export class GameGateway implements OnGatewayInit, OnGatewayDisconnect {
         !this.validateString(data?.gmReconnectToken, 100) ||
         room.gmPersistentId !== data.gmPersistentId
       ) {
-        socket.emit('gm:connectRoomError', { message: 'Not authorized.' });
+        socket.emit('gm:connectRoomError', {
+          message: 'Không có quyền truy cập.',
+        });
         return;
       }
 
@@ -265,7 +267,9 @@ export class GameGateway implements OnGatewayInit, OnGatewayDisconnect {
         ? this.roomService.reconnectGm(data.roomCode, socket.id, gmPersistentId)
         : null;
       if (!reconnected) {
-        socket.emit('gm:connectRoomError', { message: 'Not authorized.' });
+        socket.emit('gm:connectRoomError', {
+          message: 'Không có quyền truy cập.',
+        });
         return;
       }
 
@@ -284,7 +288,7 @@ export class GameGateway implements OnGatewayInit, OnGatewayDisconnect {
     socket.emit('gm:connected', {
       roomCode: data.roomCode,
       gmRoomId: data.gmRoomId,
-      message: 'GM connected successfully',
+      message: 'GM đã kết nối thành công',
     });
     socket.emit('room:updatePlayers', updatedRoom.players);
     socket.emit('game:phaseChanged', {
@@ -323,7 +327,11 @@ export class GameGateway implements OnGatewayInit, OnGatewayDisconnect {
       !this.validateString(data?.username, 30) ||
       typeof data?.avatarKey !== 'number'
     ) {
-      return { success: false, playerId: socket.id, message: 'Invalid data.' };
+      return {
+        success: false,
+        playerId: socket.id,
+        message: 'Dữ liệu không hợp lệ.',
+      };
     }
 
     const player: Player = {
@@ -346,10 +354,14 @@ export class GameGateway implements OnGatewayInit, OnGatewayDisconnect {
               data.persistentPlayerId,
             )
           : undefined,
-        message: 'Successfully joined room',
+        message: 'Tham gia phòng thành công',
       };
     } else {
-      return { success, playerId: socket.id, message: 'Unable to join room' };
+      return {
+        success,
+        playerId: socket.id,
+        message: 'Không thể tham gia phòng',
+      };
     }
   }
 
@@ -548,7 +560,9 @@ export class GameGateway implements OnGatewayInit, OnGatewayDisconnect {
         ));
 
     if (!room || !authorized) {
-      socket.emit('gm:stateSnapshotError', { message: 'Not authorized.' });
+      socket.emit('gm:stateSnapshotError', {
+        message: 'Không có quyền truy cập.',
+      });
       return;
     }
 
@@ -591,12 +605,20 @@ export class GameGateway implements OnGatewayInit, OnGatewayDisconnect {
       !this.validateString(data?.deviceId, 128) ||
       (data.participantKind !== 'player' && data.participantKind !== 'gm')
     ) {
-      return { success: false, status: 'rejected', message: 'Invalid data.' };
+      return {
+        success: false,
+        status: 'rejected',
+        message: 'Dữ liệu không hợp lệ.',
+      };
     }
 
     const room = this.roomService.getRoom(data.roomCode);
     if (!room) {
-      return { success: false, status: 'rejected', message: 'Room not found.' };
+      return {
+        success: false,
+        status: 'rejected',
+        message: 'Không tìm thấy phòng.',
+      };
     }
 
     let participantId: string | undefined;
@@ -612,11 +634,18 @@ export class GameGateway implements OnGatewayInit, OnGatewayDisconnect {
           data.gmReconnectToken,
         );
       if (!authorizedBySocket && !authorizedByToken) {
-        return { success: false, status: 'rejected', message: 'Not authorized.' };
+        return {
+          success: false,
+          status: 'rejected',
+          message: 'Không có quyền truy cập.',
+        };
       }
       participantId = room.players.find((p) => p.status === 'gm')?.id;
     } else {
-      const participantKind = this.getRoomParticipantKind(socket, data.roomCode);
+      const participantKind = this.getRoomParticipantKind(
+        socket,
+        data.roomCode,
+      );
       const authorizedBySocket = participantKind === 'player';
       const authorizedByToken =
         this.validateString(data?.persistentPlayerId, 64) &&
@@ -627,30 +656,46 @@ export class GameGateway implements OnGatewayInit, OnGatewayDisconnect {
           data.reconnectToken,
         );
       if (!authorizedBySocket && !authorizedByToken) {
-        return { success: false, status: 'rejected', message: 'Not authorized.' };
+        return {
+          success: false,
+          status: 'rejected',
+          message: 'Không có quyền truy cập.',
+        };
       }
       participantId = authorizedBySocket ? socket.id : data.persistentPlayerId;
     }
 
     if (!participantId) {
-      return { success: false, status: 'rejected', message: 'Participant not found.' };
+      return {
+        success: false,
+        status: 'rejected',
+        message: 'Không tìm thấy người tham gia.',
+      };
     }
 
-    const status = this.roomService.registerPushToken(data.roomCode, participantId, {
-      token: data.token,
-      deviceId: data.deviceId,
-      participantKind: data.participantKind,
-      persistentId:
-        data.participantKind === 'gm'
-          ? data.gmPersistentId ?? room.gmPersistentId
-          : data.persistentPlayerId,
-      socketId: socket.id,
-      userAgent: data.userAgent,
-      platform: data.platform,
-    });
+    const status = this.roomService.registerPushToken(
+      data.roomCode,
+      participantId,
+      {
+        token: data.token,
+        deviceId: data.deviceId,
+        participantKind: data.participantKind,
+        persistentId:
+          data.participantKind === 'gm'
+            ? (data.gmPersistentId ?? room.gmPersistentId)
+            : data.persistentPlayerId,
+        socketId: socket.id,
+        userAgent: data.userAgent,
+        platform: data.platform,
+      },
+    );
 
     if (status === 'not_found') {
-      return { success: false, status: 'rejected', message: 'Participant not found.' };
+      return {
+        success: false,
+        status: 'rejected',
+        message: 'Không tìm thấy người tham gia.',
+      };
     }
 
     return {
@@ -679,15 +724,24 @@ export class GameGateway implements OnGatewayInit, OnGatewayDisconnect {
       !this.validateRoomCode(data) ||
       (!data.token && !data.deviceId) ||
       (data.token !== undefined && !this.validateString(data.token, 4096)) ||
-      (data.deviceId !== undefined && !this.validateString(data.deviceId, 128)) ||
+      (data.deviceId !== undefined &&
+        !this.validateString(data.deviceId, 128)) ||
       (data.participantKind !== 'player' && data.participantKind !== 'gm')
     ) {
-      return { success: false, status: 'rejected', message: 'Invalid data.' };
+      return {
+        success: false,
+        status: 'rejected',
+        message: 'Dữ liệu không hợp lệ.',
+      };
     }
 
     const room = this.roomService.getRoom(data.roomCode);
     if (!room) {
-      return { success: false, status: 'not_found', message: 'Room not found.' };
+      return {
+        success: false,
+        status: 'not_found',
+        message: 'Không tìm thấy phòng.',
+      };
     }
 
     let participantId: string | undefined;
@@ -703,11 +757,18 @@ export class GameGateway implements OnGatewayInit, OnGatewayDisconnect {
           data.gmReconnectToken,
         );
       if (!authorizedBySocket && !authorizedByToken) {
-        return { success: false, status: 'rejected', message: 'Not authorized.' };
+        return {
+          success: false,
+          status: 'rejected',
+          message: 'Không có quyền truy cập.',
+        };
       }
       participantId = room.players.find((p) => p.status === 'gm')?.id;
     } else {
-      const participantKind = this.getRoomParticipantKind(socket, data.roomCode);
+      const participantKind = this.getRoomParticipantKind(
+        socket,
+        data.roomCode,
+      );
       const authorizedBySocket = participantKind === 'player';
       const authorizedByToken =
         this.validateString(data?.persistentPlayerId, 64) &&
@@ -718,13 +779,21 @@ export class GameGateway implements OnGatewayInit, OnGatewayDisconnect {
           data.reconnectToken,
         );
       if (!authorizedBySocket && !authorizedByToken) {
-        return { success: false, status: 'rejected', message: 'Not authorized.' };
+        return {
+          success: false,
+          status: 'rejected',
+          message: 'Không có quyền truy cập.',
+        };
       }
       participantId = authorizedBySocket ? socket.id : data.persistentPlayerId;
     }
 
     if (!participantId) {
-      return { success: false, status: 'not_found', message: 'Participant not found.' };
+      return {
+        success: false,
+        status: 'not_found',
+        message: 'Không tìm thấy người tham gia.',
+      };
     }
 
     const status = this.roomService.unregisterPushToken(
@@ -737,7 +806,8 @@ export class GameGateway implements OnGatewayInit, OnGatewayDisconnect {
     return {
       success: status === 'removed',
       status,
-      message: status === 'removed' ? 'Đã tắt thông báo.' : 'Không tìm thấy token.',
+      message:
+        status === 'removed' ? 'Đã tắt thông báo.' : 'Không tìm thấy token.',
     };
   }
 
@@ -857,8 +927,8 @@ export class GameGateway implements OnGatewayInit, OnGatewayDisconnect {
       return { success: false, message: 'Mã phòng không hợp lệ.' };
     }
     if (!this.isHost(socket, data.roomCode)) {
-      socket.emit('room:resetError', { message: 'Not authorized.' });
-      return { success: false, message: 'Not authorized.' };
+      socket.emit('room:resetError', { message: 'Không có quyền truy cập.' });
+      return { success: false, message: 'Không có quyền truy cập.' };
     }
 
     const room = this.roomService.getRoom(data.roomCode);
@@ -875,7 +945,8 @@ export class GameGateway implements OnGatewayInit, OnGatewayDisconnect {
 
     this.phaseManager.resetRoomState(data.roomCode);
     const resetRoom = this.roomService.resetRoom(data.roomCode);
-    if (!resetRoom) return { success: false, message: 'Không thể reset phòng.' };
+    if (!resetRoom)
+      return { success: false, message: 'Không thể reset phòng.' };
     const resetPlayerPushTokens = this.roomService.getPushTokensForRoomPlayers(
       data.roomCode,
       { approvedOnly: true },
@@ -927,7 +998,9 @@ export class GameGateway implements OnGatewayInit, OnGatewayDisconnect {
       return;
     }
     if (!this.isHost(socket, data.roomCode)) {
-      socket.emit('room:approvePlayerError', { message: 'Not authorized.' });
+      socket.emit('room:approvePlayerError', {
+        message: 'Không có quyền truy cập.',
+      });
       return;
     }
     const success = this.roomService.approvePlayer(
@@ -956,7 +1029,7 @@ export class GameGateway implements OnGatewayInit, OnGatewayDisconnect {
       );
     } else {
       socket.emit('room:approvePlayerError', {
-        message: 'Unable to approve player.',
+        message: 'Không thể duyệt người chơi.',
       });
     }
   }
@@ -970,7 +1043,9 @@ export class GameGateway implements OnGatewayInit, OnGatewayDisconnect {
       return;
     }
     if (!this.isHost(socket, data.roomCode)) {
-      socket.emit('room:rejectPlayerError', { message: 'Not authorized.' });
+      socket.emit('room:rejectPlayerError', {
+        message: 'Không có quyền truy cập.',
+      });
       return;
     }
     const pushTokens = this.roomService.getPushTokensForPlayer(
@@ -980,9 +1055,9 @@ export class GameGateway implements OnGatewayInit, OnGatewayDisconnect {
     const success = this.roomService.rejectPlayer(data.roomCode, data.playerId);
     if (success) {
       this.emitRoomPlayers(data.roomCode);
-      this.server
-        .to(data.playerId)
-        .emit('player:rejected', { message: 'You were rejected by the GM.' });
+      this.server.to(data.playerId).emit('player:rejected', {
+        message: 'Bạn đã bị quản trò từ chối.',
+      });
       this.sendPush(
         data.roomCode,
         pushTokens,
@@ -998,7 +1073,7 @@ export class GameGateway implements OnGatewayInit, OnGatewayDisconnect {
       );
     } else {
       socket.emit('room:rejectPlayerError', {
-        message: 'Unable to reject player.',
+        message: 'Không thể từ chối người chơi.',
       });
     }
   }
@@ -1010,7 +1085,9 @@ export class GameGateway implements OnGatewayInit, OnGatewayDisconnect {
   ) {
     if (!this.validateRoomCode(data)) return;
     if (!this.isHost(socket, data.roomCode)) {
-      socket.emit('room:updatePlayersError', { message: 'Not authorized.' });
+      socket.emit('room:updatePlayersError', {
+        message: 'Không có quyền truy cập.',
+      });
       return;
     }
     const players = this.roomService.getPlayers(data.roomCode);
@@ -1041,7 +1118,7 @@ export class GameGateway implements OnGatewayInit, OnGatewayDisconnect {
       const ack = {
         success: false,
         status: 'not_authorized',
-        message: 'Not authorized.',
+        message: 'Không có quyền truy cập.',
       };
       socket.emit('gm:eliminatePlayerError', { message: ack.message });
       return ack;
@@ -1125,7 +1202,7 @@ export class GameGateway implements OnGatewayInit, OnGatewayDisconnect {
       const ack = {
         success: false,
         status: 'not_authorized',
-        message: 'Not authorized.',
+        message: 'Không có quyền truy cập.',
       };
       socket.emit('gm:revivePlayerError', { message: ack.message });
       return ack;
@@ -1197,7 +1274,9 @@ export class GameGateway implements OnGatewayInit, OnGatewayDisconnect {
 
     const participantKind = this.getRoomParticipantKind(socket, data.roomCode);
     if (!participantKind) {
-      socket.emit('room:updatePlayersError', { message: 'Not authorized.' });
+      socket.emit('room:updatePlayersError', {
+        message: 'Không có quyền truy cập.',
+      });
       return;
     }
 
@@ -1216,11 +1295,13 @@ export class GameGateway implements OnGatewayInit, OnGatewayDisconnect {
     @MessageBody() data: { roomCode: string; roles: Role[] },
   ) {
     if (!this.validateRoomCode(data) || !Array.isArray(data?.roles)) {
-      return 'Invalid data.';
+      return 'Dữ liệu không hợp lệ.';
     }
     if (!this.isHost(socket, data.roomCode)) {
-      socket.emit('room:randomizeRolesError', { message: 'Not authorized.' });
-      return 'Not authorized.';
+      socket.emit('room:randomizeRolesError', {
+        message: 'Không có quyền truy cập.',
+      });
+      return 'Không có quyền truy cập.';
     }
     const validRoles = [
       'villager',
@@ -1233,9 +1314,9 @@ export class GameGateway implements OnGatewayInit, OnGatewayDisconnect {
       'cupid',
     ];
     if (!data.roles.every((role) => validRoles.includes(role)))
-      return 'Invalid roles provided';
+      return 'Danh sách vai không hợp lệ';
     if (!data.roles.includes('werewolf'))
-      return 'Role list must include at least one werewolf';
+      return 'Danh sách vai phải có ít nhất một Sói';
     const success = this.roomService.randomizeRoles(data.roomCode, data.roles);
     if (success) {
       const updatedRoom = this.roomService.getRoom(data.roomCode);
@@ -1252,9 +1333,9 @@ export class GameGateway implements OnGatewayInit, OnGatewayDisconnect {
       return '';
     }
     socket.emit('room:randomizeRolesError', {
-      message: 'Unable to randomize roles',
+      message: 'Không thể phân vai ngẫu nhiên',
     });
-    return 'Unable to randomize roles';
+    return 'Không thể phân vai ngẫu nhiên';
   }
 
   @SubscribeMessage('rq_player:ready')
@@ -1272,7 +1353,9 @@ export class GameGateway implements OnGatewayInit, OnGatewayDisconnect {
 
     this.emitRoomPlayers(data.roomCode);
 
-    const currentPlayer = updatedRoom.players.find((player) => player.id === socket.id);
+    const currentPlayer = updatedRoom.players.find(
+      (player) => player.id === socket.id,
+    );
     if (currentPlayer?.status !== 'approved' || currentPlayer.ready !== true) {
       socket.emit('player:readyError', {
         message: 'Không thể đánh dấu sẵn sàng lúc này.',
@@ -1318,7 +1401,7 @@ export class GameGateway implements OnGatewayInit, OnGatewayDisconnect {
       const ack = {
         success: false,
         status: 'not_authorized',
-        message: 'Not authorized.',
+        message: 'Không có quyền truy cập.',
       };
       socket.emit('gm:dayTimerControlError', { message: ack.message });
       return ack;
@@ -1373,7 +1456,7 @@ export class GameGateway implements OnGatewayInit, OnGatewayDisconnect {
   ) {
     if (!this.validateRoomCode(data)) return;
     if (!this.isHost(socket, data.roomCode)) {
-      socket.emit('room:phaseError', { message: 'Not authorized.' });
+      socket.emit('room:phaseError', { message: 'Không có quyền truy cập.' });
       return;
     }
 
@@ -1417,7 +1500,7 @@ export class GameGateway implements OnGatewayInit, OnGatewayDisconnect {
           break;
         default:
           socket.emit('room:phaseError', {
-            message: 'Game state not found.',
+            message: 'Không tìm thấy trạng thái trò chơi.',
           });
           break;
       }
